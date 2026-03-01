@@ -8431,21 +8431,9 @@ function LeafVE.UI:Refresh()
       ))
     end
     
-    -- Weekly: use higher of local aggregation vs synced lboard data (mirrors RefreshLeaderboard logic)
+    -- Weekly: use only local aggregation (same as Today uses global[day][me] directly)
     local weekAgg = (AggForThisWeek())
-    local wk = WeekKey()
-    local localWeekT = weekAgg[me]
-    local syncedWeekT = LeafVE_DB.lboard.weekly[wk] and LeafVE_DB.lboard.weekly[wk][me]
-    local weekT
-    if localWeekT and syncedWeekT then
-      local localTotal = (localWeekT.L or 0) + (localWeekT.G or 0) + (localWeekT.S or 0)
-      local syncedTotal = (syncedWeekT.L or 0) + (syncedWeekT.G or 0) + (syncedWeekT.S or 0)
-      weekT = localTotal >= syncedTotal and localWeekT or syncedWeekT
-    elseif localWeekT then
-      weekT = localWeekT
-    else
-      weekT = syncedWeekT or {L = 0, G = 0, S = 0}
-    end
+    local weekT = weekAgg[me] or {L = 0, G = 0, S = 0}
     if self.panels.me.weekStats then
       self.panels.me.weekStats:SetText(string.format(
         "Login: %d  |  Group: %d  |  Shoutouts: %d  |  |cFFFFD700Total: %d|r",
@@ -8461,19 +8449,8 @@ function LeafVE.UI:Refresh()
       ))
     end
     
-    -- All-time: use higher of local vs synced lboard data (mirrors RefreshLeaderboard logic)
-    local localAlltimeT = LeafVE_DB.alltime[me]
-    local syncedAlltimeT = LeafVE_DB.lboard.alltime[me]
-    local alltimeT
-    if localAlltimeT and syncedAlltimeT then
-      local localTotal = (localAlltimeT.L or 0) + (localAlltimeT.G or 0) + (localAlltimeT.S or 0)
-      local syncedTotal = (syncedAlltimeT.L or 0) + (syncedAlltimeT.G or 0) + (syncedAlltimeT.S or 0)
-      alltimeT = localTotal >= syncedTotal and localAlltimeT or syncedAlltimeT
-    elseif localAlltimeT then
-      alltimeT = localAlltimeT
-    else
-      alltimeT = syncedAlltimeT or {L = 0, G = 0, S = 0}
-    end
+    -- All-time: use only local data (same as Season uses season[me] directly)
+    local alltimeT = LeafVE_DB.alltime[me] or {L = 0, G = 0, S = 0}
     if self.panels.me.alltimeStats then
       self.panels.me.alltimeStats:SetText(string.format(
         "Login: %d  |  Group: %d  |  Shoutouts: %d  |  |cFFFFD700Total: %d|r",
