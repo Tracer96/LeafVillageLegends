@@ -1308,6 +1308,8 @@ function LeafVE:CheckDailyLogin()
   LeafVE_DB.loginTracking[me][today] = true
   if awarded and awarded > 0 then
     Print(string.format("Daily login point awarded! (+%d L)", awarded))
+    LeafVE.UI:Refresh()
+    self:BroadcastLeaderboardData()
   end
 end
 
@@ -1495,6 +1497,8 @@ function LeafVE:ApplyGroupPointAward(playerName, pointsPerGuildie, numGuildies, 
     LeafVE_DB.groupSessions[playerName] = (LeafVE_DB.groupSessions[playerName] or 0) + 1
     self:CheckBadgeMilestones(playerName)
     Print(string.format("Group points awarded! +%d LP (%d per guildie x%d guildies)", awarded, pointsPerGuildie, numGuildies))
+    LeafVE.UI:Refresh()
+    self:BroadcastLeaderboardData()
   end
   return awarded or 0
 end
@@ -1864,6 +1868,8 @@ function LeafVE:GiveShoutout(targetName, reason)
   local awardedTarget = self:AddPoints(targetName, "S", shoutPts)
   if awardedTarget and awardedTarget > 0 then
     self:AddToHistory(targetName, "S", awardedTarget, "Shoutout from "..giverName..(reason and (": "..reason) or ""))
+    LeafVE.UI:Refresh()
+    self:BroadcastLeaderboardData()
   end
   self:CheckAndAwardBadge(giverName, "first_shoutout_given")
   
@@ -1886,7 +1892,7 @@ function LeafVE:GiveShoutout(targetName, reason)
       message = message .. " - " .. reason 
     end
     
-    message = message .. " (+"..shoutPts.." Leaf Points each)"
+    message = message .. " (+"..shoutPts.." Leaf Points)"
     SendChatMessage(message, "GUILD")
     SendAddonMessage("LeafVE", "SHOUTOUT:"..giverName..":"..targetName, "GUILD")
   end
@@ -2586,6 +2592,8 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
               LeafVE_DB.shoutouts[msgGiver][targetName] = Now()
               local shoutPtsIncoming = (LeafVE_DB.options and LeafVE_DB.options.shoutoutPoints) or 10
               self:AddPoints(targetName, "S", shoutPtsIncoming)
+              LeafVE.UI:Refresh()
+              self:BroadcastLeaderboardData()
             end
             -- If we are the shoutout recipient, award received badges on our machine
             if me and Lower(me) == Lower(targetName) then
