@@ -7186,6 +7186,7 @@ local function BuildWelcomePanel(panel)
   AddLine("|cFF00CCFF/lboardreq|r              - Request leaderboard sync")
   AddLine("|cFF00CCFF/badgesync|r              - Broadcast your badges")
   AddLine("|cFF00CCFF/lvedebug points|r        - Show your current points")
+  AddLine("|cFF00CCFF/lve debug|r             - Full Leaf Points health report")
   yOffset = yOffset - 6
   AddDivider()
 
@@ -9065,6 +9066,93 @@ SlashCmdList["LEAFVE"] = function(msg)
     end
     LeafVE.UI = { activeTab = "me" }
     LeafVE:ToggleUI()
+
+  elseif trimmedMsg == "debug" or trimmedMsg == "health" then
+    EnsureDB()
+    local function DP(line)
+      DEFAULT_CHAT_FRAME:AddMessage("|cff00ffff[LVE Debug]|r " .. tostring(line))
+    end
+    local me = ShortName(UnitName("player"))
+    local today = DayKey()
+    local now = Now()
+
+    DP("=== LEAF POINTS HEALTH REPORT ===")
+
+    -- 1. Point Summary
+    local dayT = (LeafVE_DB.global and LeafVE_DB.global[today] and LeafVE_DB.global[today][me]) or {L = 0, G = 0, S = 0}
+    local totalToday = (dayT.L or 0) + (dayT.G or 0) + (dayT.S or 0)
+    local allT = (LeafVE_DB.alltime and LeafVE_DB.alltime[me]) or {L = 0, G = 0, S = 0}
+    local grandTotal = (allT.L or 0) + (allT.G or 0) + (allT.S or 0)
+    local dailyCap = LEAF_POINT_DAILY_CAP
+    local remaining = (dailyCap == 0) and "unlimited" or tostring(math.max(0, dailyCap - totalToday))
+    local capDisplay = (dailyCap == 0) and "unlimited" or tostring(dailyCap)
+    DP(string.format("Your Points: %d total (L:%d G:%d S:%d)", grandTotal, allT.L or 0, allT.G or 0, allT.S or 0))
+    DP(string.format("Daily Cap: %s | Points today: %d | Remaining: %s", capDisplay, totalToday, remaining))
+
+    -- 2. S-Point Sanity Check
+    local sPoints = dayT.S or 0
+    local shoutoutsRcvToday = 0
+    for giver, targets in pairs(LeafVE_DB.shoutouts or {}) do
+      for target, ts in pairs(targets) do
+        if Lower(target) == Lower(me) and DayKeyFromTS(ts) == today then
+          shoutoutsRcvToday = shoutoutsRcvToday + 1
+        end
+      end
+    end
+    local soMax = (LeafVE_DB.options and LeafVE_DB.options.shoutoutMaxDaily) or SHOUTOUT_MAX_PER_DAY
+    local shoutPts = (LeafVE_DB.options and LeafVE_DB.options.shoutoutPoints) or 10
+    local maxSExpected = shoutoutsRcvToday * shoutPts
+    DP(string.format("S-Point Check: %d S points recorded", sPoints))
+    DP(string.format("  Shoutouts received today: %d (max %d, so max %d S pts expected)", shoutoutsRcvToday, soMax, maxSExpected))
+    if sPoints > maxSExpected then
+      DP("  STATUS: WARNING: S points exceed shoutout cap! Possible ghost points.")
+    else
+      DP("  STATUS: OK")
+    end
+
+    -- 3. Group Timer State
+    local secsSinceGroup = "N/A"
+    if LeafVE.lastGroupAwardTick then
+      secsSinceGroup = tostring(now - LeafVE.lastGroupAwardTick)
+    end
+    DP(string.format("Group Timer: %s seconds since last group award (fires at %ds)", tostring(secsSinceGroup), GROUP_POINT_INTERVAL))
+    local guildiesInGroup = LeafVE:GetGroupGuildies()
+    local numGuildies = table.getn(guildiesInGroup)
+    local nameList = (numGuildies > 0) and table.concat(guildiesInGroup, ", ") or "none"
+    DP(string.format("Guildies in current group: %d (names: %s)", numGuildies, nameList))
+    local groupPts = (LeafVE_DB.options and LeafVE_DB.options.groupPoints) or GROUP_POINTS
+    DP(string.format("Expected next award: %d LP (%d x %d guildies)", groupPts * numGuildies, groupPts, numGuildies))
+    local isAfk = (UnitIsAFK and UnitIsAFK("player")) or
+      (LeafVE.lastActivityTime and LeafVE.lastActivityTime > 0 and (now - LeafVE.lastActivityTime) > AFK_TIMEOUT)
+    DP("AFK status: " .. (isAfk and "AFK (points paused)" or "NOT AFK"))
+
+    -- 4. Last 5 Point History Entries
+    local history = LeafVE:GetHistory(me, 5)
+    DP("Recent History (last 5):")
+    if table.getn(history) == 0 then
+      DP("  (no history recorded)")
+    else
+      for i = 1, table.getn(history) do
+        local entry = history[i]
+        local ds = entry.dateStr or date("%m/%d %H:%M", entry.timestamp)
+        DP(string.format("  [%d] +%d %s - %s (%s)", i, entry.amount, entry.type, entry.reason, ds))
+      end
+    end
+
+    -- 5. Sync State
+    local lastSyncSecs = "N/A"
+    if LeafVE.lastResyncRespondAt and LeafVE.lastResyncRespondAt > 0 then
+      lastSyncSecs = tostring(now - LeafVE.lastResyncRespondAt)
+    elseif LeafVE.lastResyncRequestAt and LeafVE.lastResyncRequestAt > 0 then
+      lastSyncSecs = tostring(now - LeafVE.lastResyncRequestAt)
+    end
+    local knownCount = 0
+    if LeafVE_DB.alltime then
+      for _ in pairs(LeafVE_DB.alltime) do knownCount = knownCount + 1 end
+    end
+    DP(string.format("Last sync: %s seconds ago", tostring(lastSyncSecs)))
+    DP(string.format("Known guild members with data: %d", knownCount))
+    DP("=================================")
 
   else
     LeafVE:ToggleUI()
