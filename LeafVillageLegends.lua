@@ -1855,6 +1855,10 @@ function LeafVE:GiveShoutout(targetName, reason)
   if awardedTarget and awardedTarget > 0 then
     self:AddToHistory(targetName, "S", awardedTarget, "Shoutout from "..giverName..(reason and (": "..reason) or ""))
   end
+  local awardedGiver = self:AddPoints(giverName, "S", shoutPts)
+  if awardedGiver and awardedGiver > 0 then
+    self:AddToHistory(giverName, "S", awardedGiver, "Shoutout given to "..targetName..(reason and (": "..reason) or ""))
+  end
   self:CheckAndAwardBadge(giverName, "first_shoutout_given")
   
   if InGuild() then
@@ -4108,6 +4112,9 @@ function LeafVE.UI:ShowPlayerCard(playerName)
   self.cardName:SetText(playerName)
 
   local guildInfo = LeafVE:GetGuildInfo(playerName)
+  if not guildInfo and LeafVE_DB and LeafVE_DB.persistentRoster then
+    guildInfo = LeafVE_DB.persistentRoster[Lower(playerName)]
+  end
   local class = guildInfo and guildInfo.class or "Unknown"
   local level = guildInfo and guildInfo.level or "??"
   local rank = guildInfo and guildInfo.rank or "Unknown"
@@ -4665,6 +4672,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
 
   if snapshot and snapshot.slots then
     local unitToken = FindUnitToken(playerName)
+    local needsRetry = false
     for i = 1, table.getn(GEAR_SLOT_NAMES) do
       local slotName = GEAR_SLOT_NAMES[i]
       local label    = GEAR_SLOT_LABELS[slotName] or slotName
@@ -4723,6 +4731,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
         else
           entry.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
           entry.icon:SetVertexColor(0.5, 0.5, 0.5, 1)
+          needsRetry = true
         end
         local displayText
         if itemName then
@@ -4751,6 +4760,13 @@ function LeafVE.UI:RefreshGearPopup(playerName)
 
       entry:Show()
       yOffset = yOffset - entryH - 2
+    end
+    if needsRetry then
+      C_Timer_After(3, function()
+        if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
+          LeafVE.UI:RefreshGearPopup(playerName)
+        end
+      end)
     end
   else
     local entry = self.gearPopup.slotEntries[1]
