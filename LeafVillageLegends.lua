@@ -2079,6 +2079,7 @@ function LVL_AwardShoutout(giverKey, targetKey)
 end
 
 
+function LeafVE:BroadcastMyAchievements()
   EnsureDB()
 
   if not LeafVE_AchTest_DB or not LeafVE_AchTest_DB.achievements then return end
@@ -6251,6 +6252,7 @@ local function BuildAltPanel(panel)
 end
 
 
+local function BuildLeaderboardPanel(panel, isWeekly)
   -- Block header background
   local headerBG = panel:CreateTexture(nil, "BACKGROUND")
   headerBG:SetPoint("TOP", panel, "TOP", -15, -10)
@@ -8179,6 +8181,7 @@ function LeafVE.UI:RefreshAltPanel()
 end
 
 
+function LeafVE.UI:RefreshShoutoutsPanel()
   if not self.panels or not self.panels.shoutouts then return end
   local panel = self.panels.shoutouts
   if not panel.shoutScrollChild then return end
