@@ -20,11 +20,11 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.0"
+LeafVE.version = "10.8"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
-LeafVE.minCompatVersion = "11.0"
+LeafVE.minCompatVersion = "10.8"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
@@ -39,8 +39,7 @@ local LBOARD_RESPOND_COOLDOWN = 30 -- seconds between responses to LBOARDREQ
 local SHOUT_SYNC_RESPOND_COOLDOWN = 30 -- seconds between shoutout history sync responses
 local DEFAULT_ACHIEVEMENT_POINTS = 10  -- fallback points per achievement when metadata is unavailable
 
-local GEAR_BROADCAST_THROTTLE  = 10  -- seconds between gear broadcasts
-local STATS_BROADCAST_THROTTLE = 30  -- seconds between BCS stats broadcasts
+local GEAR_BROADCAST_THROTTLE = 10  -- seconds between gear broadcasts
 local GEAR_SLOT_NAMES = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
   "WristSlot", "HandsSlot", "WaistSlot", "LegsSlot", "FeetSlot",
@@ -53,12 +52,6 @@ local GEAR_SLOT_LABELS = {
   LegsSlot = "Legs", FeetSlot = "Feet", Finger0Slot = "Ring 1", Finger1Slot = "Ring 2",
   Trinket0Slot = "Trinket 1", Trinket1Slot = "Trinket 2", MainHandSlot = "Main Hand",
   SecondaryHandSlot = "Off Hand", RangedSlot = "Ranged",
-}
-local GEAR_SLOT_IDS = {
-  HeadSlot = 1, NeckSlot = 2, ShoulderSlot = 3, BackSlot = 15, ChestSlot = 5,
-  WristSlot = 9, HandsSlot = 10, WaistSlot = 6, LegsSlot = 7, FeetSlot = 8,
-  Finger0Slot = 11, Finger1Slot = 12, Trinket0Slot = 13, Trinket1Slot = 14,
-  MainHandSlot = 16, SecondaryHandSlot = 17, RangedSlot = 18,
 }
 
 local INSTANCE_BOSS_POINTS = 10       -- dungeon boss
@@ -74,23 +67,11 @@ local LEAF_POINT_DAILY_CAP = 700
 local GROUP_POINTS = 10               -- points awarded per guild group tick
 local GROUP_POINTS_DAILY_CAP = 0      -- no separate group cap; global daily cap applies
 
--- Named constants for the three point categories.  Use these everywhere instead
--- of raw "L"/"G"/"S" strings to prevent accidental mis-categorisation.
-local POINT_TYPE_LOGIN    = "L"  -- daily login and login-streak bonus
-local POINT_TYPE_GAMEPLAY = "G"  -- quests, dungeons, raids, boss kills, guild grouping
-local POINT_TYPE_SOCIAL   = "S"  -- shoutout received (the ONLY activity that awards S)
-
 local SEASON_REWARD_1 = 10
 local SEASON_REWARD_2 = 5
 local SEASON_REWARD_3 = 3
 local SEASON_REWARD_4 = 2
 local SEASON_REWARD_5 = 1
-
--- Shoutout V2 constants
-local SHOUTOUT_V2_POINTS = 10
-local SHOUTOUT_GIVER_COOLDOWN = 3600   -- 1 hour between shoutouts from same giver
-local SHOUTOUT_TARGET_COOLDOWN = 3600  -- 1 hour between receiving from same source
-local SHOUTOUT_V2_MAX_PER_DAY = 3      -- max shoutouts a giver can give per day
 
 -- Guild ranks that can access the Admin tab
 local ADMIN_RANKS = { anbu = true, sannin = true, hokage = true }
@@ -102,16 +83,6 @@ local ACCESS_RANKS = {
   chunin = true,
   genin = true,
   ["academy student"] = true,
-}
-
-local VALID_GUILD_RANKS = {
-  ["Academy Student"] = true,
-  ["Genin"] = true,
-  ["Chunin"] = true,
-  ["Jonin"] = true,
-  ["Anbu"] = true,
-  ["Sannin"] = true,
-  ["Hokage"] = true,
 }
 
 local LEAF_EMBLEM = "Interface\\Icons\\Spell_Nature_ResistNature"
@@ -466,7 +437,7 @@ LeafVE.instanceZone = nil
 LeafVE.instanceHasGuildie = false
 LeafVE.instanceBossesKilledThisRun = 0
 LeafVE.recentBossKills = {}  -- bossName -> timestamp, for dedup within a short window
-LeafVE.lastGroupAwardTime = nil
+LeafVE.lastGroupAwardTick = nil
 LeafVE.lastCombatAt = 0
 LeafVE.lastActivityTime = 0
 local AFK_TIMEOUT = 600  -- 10 minutes of inactivity = considered AFK
@@ -490,18 +461,6 @@ end
 local function Now() return time() end
 local function Lower(s) return s and string.lower(s) or "" end
 local function Trim(s) return (string.gsub(s or "", "^%s*(.-)%s*$", "%1")) end
-
--- Strip WoW color/link escape codes so strings are safe for SendChatMessage().
--- |cffRRGGBB, |r, |H...|h, and |h are rejected by the 1.12 client when sent
--- over the network; they are only valid in local AddMessage() calls.
-local function StripColorCodes(text)
-  if not text then return "" end
-  text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
-  text = string.gsub(text, "|r", "")
-  text = string.gsub(text, "|H.-|h", "")
-  text = string.gsub(text, "|h", "")
-  return text
-end
 
 local function ShortName(name)
   if not name then return nil end
@@ -684,7 +643,6 @@ local function EnsureDB()
   if not LeafVE_DB.questCompletions then LeafVE_DB.questCompletions = {} end
   if not LeafVE_DB.groupSessions then LeafVE_DB.groupSessions = {} end
   if not LeafVE_DB.groupPointsToday then LeafVE_DB.groupPointsToday = {} end
-  if not LeafVE_DB.peerProgress then LeafVE_DB.peerProgress = {} end
   if not LeafVE_DB.lboard then LeafVE_DB.lboard = { alltime = {}, weekly = {}, season = {}, updatedAt = {} } end
   -- Ensure sub-tables exist (migration: older versions may not have all sub-tables)
   if not LeafVE_DB.lboard.alltime then LeafVE_DB.lboard.alltime = {} end
@@ -722,57 +680,50 @@ local function EnsureDB()
   if not LeafVE_GlobalDB then LeafVE_GlobalDB = {} end
   if not LeafVE_GlobalDB.playerNotes then LeafVE_GlobalDB.playerNotes = {} end
   if not LeafVE_GlobalDB.achievementCache then LeafVE_GlobalDB.achievementCache = {} end
+  if not LeafVE_GlobalDB.altLinks then LeafVE_GlobalDB.altLinks = {} end
+  if not LeafVE_GlobalDB.registeredChars then LeafVE_GlobalDB.registeredChars = {} end
+  if not LeafVE_GlobalDB.guildAltLinks then LeafVE_GlobalDB.guildAltLinks = {} end
   if not LeafVE_GlobalDB.gearCache then LeafVE_GlobalDB.gearCache = {} end
-  if not LeafVE_GlobalDB.gearStatsCache then LeafVE_GlobalDB.gearStatsCache = {} end
+  -- leaderChar stores the display name to show on the leaderboard (nil = use effective name)
   if LeafVE_DB.options.groupPoints == nil then LeafVE_DB.options.groupPoints = GROUP_POINTS end
   if LeafVE_DB.options.loginPoints == nil then LeafVE_DB.options.loginPoints = 20 end
-  -- Alt linking tables
-  if not LeafVE_DB.links then LeafVE_DB.links = {} end
-  if not LeafVE_DB.pendingMerge then LeafVE_DB.pendingMerge = {} end
-  if not LeafVE_DB.lastDeposit then LeafVE_DB.lastDeposit = {} end
-  if not LeafVE_DB.lastLinkChange then LeafVE_DB.lastLinkChange = {} end
-  -- Shoutout V2 table
-  if not LeafVE_DB.shoutouts_v2 then
-    LeafVE_DB.shoutouts_v2 = { given = {}, received = {}, daily = { dateKey = "", awards = {} } }
+end
+
+-- Returns the effective name for the current player: the linked main character name
+-- if one is set, otherwise the current character's own name.  Used to pool points
+-- across alts under a single account-wide total.
+local function GetEffectiveName()
+  local me = ShortName(UnitName("player"))
+  if not me then return me end
+  if LeafVE_GlobalDB and LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[me] then
+    return LeafVE_GlobalDB.altLinks[me]
   end
-  if not LeafVE_DB.shoutouts_v2.given then LeafVE_DB.shoutouts_v2.given = {} end
-  if not LeafVE_DB.shoutouts_v2.received then LeafVE_DB.shoutouts_v2.received = {} end
-  if not LeafVE_DB.shoutouts_v2.daily then LeafVE_DB.shoutouts_v2.daily = { dateKey = "", awards = {} } end
-  -- Meta table for guild-wide wipe tracking
-  if not LeafVE_DB.meta then LeafVE_DB.meta = {} end
-  if LeafVE_DB.meta.lastWipeId == nil then LeafVE_DB.meta.lastWipeId = "" end
+  return me
 end
 
--------------------------------------------------
--- ALT LINKING HELPER FUNCTIONS
--------------------------------------------------
-
-function LVL_GetCharKey()
-  return ShortName(UnitName("player")) or ""
+-- Returns the main character name for any given player name by checking both
+-- the guild-wide alt links (received from other members) and local alt links.
+-- Returns nil if the name is not an alt (i.e. it is already a main or unknown).
+local function GetMainForPlayer(name)
+  if not name then return nil end
+  if LeafVE_GlobalDB then
+    if LeafVE_GlobalDB.guildAltLinks and LeafVE_GlobalDB.guildAltLinks[name] then
+      return LeafVE_GlobalDB.guildAltLinks[name]
+    end
+    if LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[name] then
+      return LeafVE_GlobalDB.altLinks[name]
+    end
+  end
+  return nil
 end
 
-function LVL_IsAltLinked(key)
-  return LeafVE_DB.links and LeafVE_DB.links[key] ~= nil
-end
-
-function LVL_GetMainKey(key)
-  return (LeafVE_DB.links and LeafVE_DB.links[key]) or key
-end
-
-function LVL_FormatTime(secs)
-  local h = math.floor(secs / 3600)
-  local m = math.floor(math.mod(secs, 3600) / 60)
-  return h .. "h " .. m .. "m"
-end
-
-function LVL_Remain(last, window)
-  return math.max(0, window - (Now() - (last or 0)))
-end
-
--- Check if a short player name is a linked alt (uses current player's realm)
-function LVL_IsAltByName(shortName)
-  if not shortName or not LeafVE_DB.links then return false end
-  return LeafVE_DB.links[shortName] ~= nil
+-- Returns the display name to use on the leaderboard for the current player.
+-- Honours the /lve setleaderchar setting, falling back to the effective name.
+local function GetLeaderboardName()
+  if LeafVE_GlobalDB and LeafVE_GlobalDB.leaderChar then
+    return LeafVE_GlobalDB.leaderChar
+  end
+  return GetEffectiveName()
 end
 
 function LeafVE:AddToHistory(playerName, pointType, amount, reason)
@@ -841,7 +792,7 @@ function LeafVE:AwardBadge(playerName, badgeId)
     if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
       titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
     end
-    SendChatMessage(StripColorCodes(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!"), "GUILD")
+    SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
   end
 
   -- Broadcast badges immediately after awarding
@@ -974,119 +925,13 @@ function LeafVE:HardResetLeafPoints_Local()
   LeafVE_DB.questCompletions = {}
   LeafVE_DB.groupSessions = {}
   LeafVE_DB.groupCooldowns = {}
-  LeafVE_DB.shoutouts = {}
-  LeafVE_DB.groupPointsToday = {}
   LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
-  self.lastGroupAwardTime = nil
-  self.currentGroupStart = nil
-  self.currentGroupMembers = {}
   -- Refresh all visible panels (handles me, leaderWeek, leaderLife, etc.)
   if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.Refresh then
     LeafVE.UI:Refresh()
   end
   Print("|cFFFF4444All Leaf Points have been wiped (daily/weekly/season/all-time).|r")
 end
-
--------------------------------------------------
--- GUILD-WIDE FULL WIPE (FEATURE E)
--------------------------------------------------
-
--- Full local DB wipe preserving the wipeId so we don't reapply the same wipe twice.
-function LVL_FullWipeLocal()
-  EnsureDB()
-  local lastId = (LeafVE_DB.meta and LeafVE_DB.meta.lastWipeId) or ""
-  LeafVE_DB = {}
-  LeafVE_DB.meta = { lastWipeId = lastId }
-  -- Re-init all required tables
-  LeafVE_DB.options = {}
-  LeafVE_DB.ui = {}
-  LeafVE_DB.global = {}
-  LeafVE_DB.alltime = {}
-  LeafVE_DB.season = {}
-  LeafVE_DB.loginTracking = {}
-  LeafVE_DB.groupCooldowns = {}
-  LeafVE_DB.shoutouts = {}
-  LeafVE_DB.pointHistory = {}
-  LeafVE_DB.badges = {}
-  LeafVE_DB.attendance = {}
-  LeafVE_DB.weeklyRecap = {}
-  LeafVE_DB.loginStreaks = {}
-  LeafVE_DB.persistentRoster = {}
-  LeafVE_DB.instanceTracking = {}
-  LeafVE_DB.questTracking = {}
-  LeafVE_DB.questCompletions = {}
-  LeafVE_DB.groupSessions = {}
-  LeafVE_DB.groupPointsToday = {}
-  LeafVE_DB.peerProgress = {}
-  LeafVE_DB.lboard = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
-  LeafVE_DB.links = {}
-  LeafVE_DB.pendingMerge = {}
-  LeafVE_DB.lastDeposit = {}
-  LeafVE_DB.lastLinkChange = {}
-  LeafVE_DB.shoutouts_v2 = { given = {}, received = {}, daily = { dateKey = "", awards = {} } }
-  EnsureDB()
-  if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.Refresh then
-    LeafVE.UI:Refresh()
-  end
-end
-
--- Returns true only if sender's guild rank is Hokage, Sannin, or Anbu.
-function LVL_IsAuthorizedSender(sender)
-  if not sender then return false end
-  local info = LeafVE.guildRosterCache and LeafVE.guildRosterCache[Lower(sender)]
-  if not info then
-    info = LeafVE_DB and LeafVE_DB.persistentRoster and LeafVE_DB.persistentRoster[Lower(sender)]
-  end
-  if info and info.rank then
-    return ADMIN_RANKS[Lower(Trim(info.rank))] == true
-  end
-  return false
-end
-
--- Officer initiates a guild-wide wipe; broadcasts via LVL prefix and writes bulletin token.
-function LVL_AdminResetAll()
-  if not LeafVE:IsAdminRank() then
-    Print("|cFFFF4444You do not have permission to perform a guild-wide reset.|r")
-    return
-  end
-  EnsureDB()
-  local me = ShortName(UnitName("player")) or "unknown"
-  local wipeId = tostring(time()) .. "-" .. me
-  LeafVE_DB.meta.lastWipeId = wipeId
-  LVL_FullWipeLocal()
-  if InGuild() then
-    SendAddonMessage("LVL", "WIPE_ALL|" .. wipeId, "GUILD")
-  end
-  -- Attempt to embed a wipe token in guild info text so offline members catch it on login
-  if SetGuildInfoText then
-    local current = GetGuildInfoText and GetGuildInfoText() or ""
-    -- Remove any previous token
-    current = string.gsub(current, "%s*LVL_WIPE:[^%s]+", "")
-    local token = " LVL_WIPE:" .. wipeId
-    if string.len(current) + string.len(token) <= 500 then
-      SetGuildInfoText(current .. token)
-    end
-  end
-  Print("|cFFFF4444Guild-wide point reset initiated. All online members will be wiped.|r")
-end
-
--- Called on PLAYER_LOGIN and GUILD_ROSTER_UPDATE: check guild info for a wipe bulletin.
-function LVL_CheckGuildWipeBulletin()
-  EnsureDB()
-  local info = GetGuildInfoText and GetGuildInfoText() or ""
-  local wipeId = info and string.match(info, "LVL_WIPE:([^%s]+)")
-  if wipeId and wipeId ~= "" then
-    local stored = (LeafVE_DB.meta and LeafVE_DB.meta.lastWipeId) or ""
-    if wipeId ~= stored then
-      LeafVE_DB.meta = LeafVE_DB.meta or {}
-      LeafVE_DB.meta.lastWipeId = wipeId
-      LVL_FullWipeLocal()
-      DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[LVL]|r Guild-wide point reset detected from guild info. All data cleared.")
-    end
-  end
-end
-
-
 
 -- Hard-wipes the achievement leaderboard cache locally.
 -- Called by the admin UI button and by the guild broadcast handler.
@@ -1185,7 +1030,7 @@ function LeafVE:CheckAndAwardBadge(playerName, badgeId)
         if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
           titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
         end
-        SendChatMessage(StripColorCodes(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!"), "GUILD")
+        SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
       end
       self:BroadcastBadges()
       if LeafVE.UI.cardCurrentPlayer == playerName then
@@ -1292,54 +1137,25 @@ function LeafVE:GetBadgeProgress(playerName, badgeId)
   local name = ShortName(playerName)
   if not name then return nil, nil end
 
-  local me = ShortName(UnitName("player"))
-  local isMe = (name == me)
-
-  -- For other players use synced peer-progress data when available
-  local peer = (not isMe) and LeafVE_DB.peerProgress and LeafVE_DB.peerProgress[name]
-
   local alltime = LeafVE_DB.alltime[name] or {L=0, G=0, S=0}
-  -- Also check synced lboard alltime for non-local players
-  if not isMe then
-    local synced = LeafVE_DB.lboard and LeafVE_DB.lboard.alltime and LeafVE_DB.lboard.alltime[name]
-    if synced then
-      local sL = (synced.L or 0) + (synced.G or 0) + (synced.S or 0)
-      local aL = (alltime.L or 0) + (alltime.G or 0) + (alltime.S or 0)
-      if sL > aL then alltime = synced end
-    end
-  end
   local totalPoints = (alltime.L or 0) + (alltime.G or 0) + (alltime.S or 0)
 
   if badgeId == "total_logins_100" then
     return alltime.L or 0, 100
   elseif badgeId == "login_streak_7" then
-    local streak
-    if isMe then
-      streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
-    else
-      streak = peer and peer.streak or 0
-    end
+    local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
     return streak, 7
   elseif badgeId == "login_streak_30" then
-    local streak
-    if isMe then
-      streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
-    else
-      streak = peer and peer.streak or 0
-    end
+    local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
     return streak, 30
   elseif badgeId == "first_group" then
-    local groups = isMe and ((LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0) or (peer and peer.groups or 0)
-    return groups, 1
+    return (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0, 1
   elseif badgeId == "group_10" then
-    local groups = isMe and ((LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0) or (peer and peer.groups or 0)
-    return groups, 10
+    return (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0, 10
   elseif badgeId == "group_50" then
-    local groups = isMe and ((LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0) or (peer and peer.groups or 0)
-    return groups, 50
+    return (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0, 50
   elseif badgeId == "group_100" then
-    local groups = isMe and ((LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0) or (peer and peer.groups or 0)
-    return groups, 100
+    return (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0, 100
   elseif badgeId == "shoutout_received_10" or badgeId == "shoutout_received_50" then
     local count = 0
     for _, targets in pairs(LeafVE_DB.shoutouts or {}) do
@@ -1359,20 +1175,12 @@ function LeafVE:GetBadgeProgress(playerName, badgeId)
   elseif badgeId == "total_10000" then
     return totalPoints, 50000
   elseif badgeId == "attendance_10" then
-    local raids = isMe and table.getn(LeafVE_DB.attendance[name] or {}) or (peer and peer.raids or 0)
-    return raids, 10
+    return table.getn(LeafVE_DB.attendance[name] or {}), 10
   elseif badgeId == "attendance_50" then
-    local raids = isMe and table.getn(LeafVE_DB.attendance[name] or {}) or (peer and peer.raids or 0)
-    return raids, 50
+    return table.getn(LeafVE_DB.attendance[name] or {}), 50
   elseif badgeId == "guild_age_30" or badgeId == "guild_age_90" or badgeId == "guild_age_365" then
-    local joinTS
-    if isMe then
-      joinTS = LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name]
-    else
-      joinTS = (peer and peer.joinTS ~= 0 and peer.joinTS) or (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name])
-    end
-    if joinTS then
-      local days = math.floor((Now() - joinTS) / SECONDS_PER_DAY)
+    if LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name] then
+      local days = math.floor((Now() - LeafVE_DB.guildJoinDate[name]) / SECONDS_PER_DAY)
       if badgeId == "guild_age_30" then return days, 30 end
       if badgeId == "guild_age_90" then return days, 90 end
       return days, 365
@@ -1410,10 +1218,6 @@ end
 
 function LeafVE:AddPoints(playerName, pointType, amount)
   EnsureDB() playerName = ShortName(playerName) if not playerName then return end
-  if pointType ~= POINT_TYPE_LOGIN and pointType ~= POINT_TYPE_GAMEPLAY and pointType ~= POINT_TYPE_SOCIAL then
-    Print("ERROR: Invalid point type '"..tostring(pointType).."' — must be L, G, or S")
-    return
-  end
   amount = amount or 1 local day = DayKey()
   if not LeafVE_DB.global[day] then LeafVE_DB.global[day] = {} end
   if not LeafVE_DB.global[day][playerName] then LeafVE_DB.global[day][playerName] = {L = 0, G = 0, S = 0} end
@@ -1437,8 +1241,9 @@ function LeafVE:AddPoints(playerName, pointType, amount)
   if not LeafVE_DB.season[playerName] then LeafVE_DB.season[playerName] = {L = 0, G = 0, S = 0} end
   LeafVE_DB.season[playerName][pointType] = (LeafVE_DB.season[playerName][pointType] or 0) + amount
   local me = ShortName(UnitName("player"))
-  -- Show notification if this is the current player
-  local isMe = me and Lower(playerName) == Lower(me)
+  local myEffective = GetEffectiveName()
+  -- Show notification if this is the current player OR points are pooling to the current player's main
+  local isMe = me and (Lower(playerName) == Lower(me) or Lower(playerName) == Lower(myEffective or ""))
   if isMe then
     local typeNames = {L = "Login", G = "Gameplay", S = "Social"}
     if not self.suppressPointNotification then
@@ -1455,15 +1260,20 @@ function LeafVE:CheckDailyLogin()
   EnsureDB()
   local me = ShortName(UnitName("player"))
   if not me then return end
+  -- Register this character on the account
+  LeafVE_GlobalDB.registeredChars[me] = true
+  -- Award login points to the effective (main) name but track the daily check
+  -- per actual character so each alt can earn login points once per day.
+  local effectiveName = GetEffectiveName()
   local today = DayKey()
   if not LeafVE_DB.loginTracking[me] then LeafVE_DB.loginTracking[me] = {} end
   if LeafVE_DB.loginTracking[me][today] then return end
   local loginPts = 20
   -- Update login streak
-  if not LeafVE_DB.loginStreaks[me] then
-    LeafVE_DB.loginStreaks[me] = {current = 0, lastLogin = nil}
+  if not LeafVE_DB.loginStreaks[effectiveName] then
+    LeafVE_DB.loginStreaks[effectiveName] = {current = 0, lastLogin = nil}
   end
-  local streakData = LeafVE_DB.loginStreaks[me]
+  local streakData = LeafVE_DB.loginStreaks[effectiveName]
   local yesterday = DayKeyFromTS(Now() - SECONDS_PER_DAY)
   if streakData.lastLogin == yesterday then
     -- Consecutive day - increment streak
@@ -1617,12 +1427,6 @@ function LeafVE:IsKnownGuildie(name)
     or (LeafVE_DB and LeafVE_DB.persistentRoster and LeafVE_DB.persistentRoster[lname] ~= nil)
 end
 
-function LeafVE:GetMemberGuildRank(name)
-  if not name then return nil end
-  local data = self.guildRosterCache[Lower(name)]
-  return data and data.rank or nil
-end
-
 function LeafVE:GetGroupGuildies()
   local myGuild = GetGuildInfo("player")  -- may be nil early in the session
   self:UpdateGuildRosterCache()
@@ -1636,12 +1440,7 @@ function LeafVE:GetGroupGuildies()
       local unitGuild = GetGuildInfo(unit)
       local isGuildie = (myGuild and unitGuild and unitGuild == myGuild)
         or self:IsKnownGuildie(name)
-      if name and isGuildie then
-        local rank = self:GetMemberGuildRank(name)
-        if rank and VALID_GUILD_RANKS[rank] then
-          table.insert(guildies, name)
-        end
-      end
+      if name and isGuildie then table.insert(guildies, name) end
     end
   end
   return guildies
@@ -1651,23 +1450,23 @@ function LeafVE:GetGroupHash(members) table.sort(members) return table.concat(me
 
 function LeafVE:OnGroupUpdate()
   local guildies = self:GetGroupGuildies() local numGuildies = table.getn(guildies)
-  if numGuildies == 0 then self.currentGroupStart = nil self.currentGroupMembers = {} self.lastGroupAwardTime = nil return end
+  if numGuildies == 0 then self.currentGroupStart = nil self.currentGroupMembers = {} self.lastGroupAwardTick = nil return end
   local groupHash = self:GetGroupHash(guildies)
   if not self.currentGroupStart or groupHash ~= self:GetGroupHash(self.currentGroupMembers) then
-    self.currentGroupStart = Now() self.currentGroupMembers = guildies self.lastGroupAwardTime = nil
+    self.currentGroupStart = Now() self.currentGroupMembers = guildies self.lastGroupAwardTick = nil
     Print("Group leaf points are now active! (grouped with: "..table.concat(guildies, ", ")..")")
     return
   end
   EnsureDB()
   local groupInterval = GROUP_POINT_INTERVAL
-  local now = Now()
-  local nextAwardTime = (self.lastGroupAwardTime or self.currentGroupStart) + groupInterval
-  if self.currentGroupStart and now >= nextAwardTime then
+  local currentTick = math.floor(Now() / groupInterval)
+  local lastAwardedTick = self.lastGroupAwardTick or -1
+  if currentTick > lastAwardedTick and self.currentGroupStart and (Now() - self.currentGroupStart) >= groupInterval then
     local playerName = ShortName(UnitName("player"))
     if playerName then
       -- AFK / inactivity check
       if self:IsPlayerInactive() then
-        self.lastGroupAwardTime = now
+        self.lastGroupAwardTick = currentTick
         Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
         return
       end
@@ -1689,7 +1488,7 @@ function LeafVE:OnGroupUpdate()
         LeafVE_DB.groupSessions[playerName] = (LeafVE_DB.groupSessions[playerName] or 0) + 1
         self:CheckBadgeMilestones(playerName)
       end
-      self.lastGroupAwardTime = now
+      self.lastGroupAwardTick = currentTick
       if awarded and awarded > 0 then
         Print(string.format("Group points awarded! +%d LP (%d per guildie x%d guildies)", awarded, pointsPerGuildie, numGuildies))
       end
@@ -1978,6 +1777,10 @@ function LeafVE:GiveShoutout(targetName, reason)
   if awardedTarget and awardedTarget > 0 then
     self:AddToHistory(targetName, "S", awardedTarget, "Shoutout from "..giverName..(reason and (": "..reason) or ""))
   end
+  local awardedGiver = self:AddPoints(giverName, "S", shoutPts)
+  if awardedGiver and awardedGiver > 0 then
+    self:AddToHistory(giverName, "S", awardedGiver, "Gave shoutout to "..targetName..(reason and (": "..reason) or ""))
+  end
   self:CheckAndAwardBadge(giverName, "first_shoutout_given")
   
   if InGuild() then
@@ -2000,7 +1803,7 @@ function LeafVE:GiveShoutout(targetName, reason)
     end
     
     message = message .. " (+"..shoutPts.." Leaf Points each)"
-    SendChatMessage(StripColorCodes(message), "GUILD")
+    SendChatMessage(message, "GUILD")
     SendAddonMessage("LeafVE", "SHOUTOUT:"..giverName..":"..targetName, "GUILD")
   end
   
@@ -2008,88 +1811,6 @@ function LeafVE:GiveShoutout(targetName, reason)
   Print(string.format("Shoutout sent to %s! (%d remaining today)", targetName, remaining))
   return true
 end
-
--------------------------------------------------
--- SHOUTOUT V2 (FEATURE D)
--------------------------------------------------
-
--- Helper: ensure shoutouts_v2 daily table is current (resets when the date changes).
-local function LVL_EnsureShoutoutDailyReset(sv2)
-  local today = DayKey()
-  if sv2.daily.dateKey ~= today then
-    sv2.daily.dateKey = today
-    sv2.daily.awards = {}
-  end
-end
-
--- Check if a giver can award a shoutout to a target.
--- Returns: canAward (bool), reason (string or nil).
-function LVL_CanShoutout(giverKey, targetKey)
-  EnsureDB()
-  if not giverKey or not targetKey then return false, "Invalid names" end
-  if Lower(giverKey) == Lower(targetKey) then return false, "Cannot shoutout yourself" end
-  local sv2 = LeafVE_DB.shoutouts_v2
-  LVL_EnsureShoutoutDailyReset(sv2)
-  -- Daily limit per giver
-  local awardsToday = sv2.daily.awards[giverKey] or 0
-  if awardsToday >= SHOUTOUT_V2_MAX_PER_DAY then
-    return false, string.format("Daily limit reached (%d/%d)", awardsToday, SHOUTOUT_V2_MAX_PER_DAY)
-  end
-  -- Giver cooldown: check last time this giver gave to this specific target today
-  local givenToTarget = sv2.given[giverKey] and sv2.given[giverKey][targetKey]
-  if givenToTarget then
-    local elapsed = Now() - givenToTarget
-    if elapsed < SHOUTOUT_GIVER_COOLDOWN then
-      local rem = SHOUTOUT_GIVER_COOLDOWN - elapsed
-      return false, string.format("Giver cooldown: %s remaining", LVL_FormatTime(rem))
-    end
-  end
-  -- Target cooldown: check last time this target received from this giver
-  local rcvFromGiver = sv2.received[targetKey] and sv2.received[targetKey][giverKey]
-  if rcvFromGiver then
-    local elapsed = Now() - rcvFromGiver
-    if elapsed < SHOUTOUT_TARGET_COOLDOWN then
-      local rem = SHOUTOUT_TARGET_COOLDOWN - elapsed
-      return false, string.format("Target cooldown: %s remaining", LVL_FormatTime(rem))
-    end
-  end
-  return true, nil
-end
-
--- Award a shoutout from giverKey to targetKey using the V2 system.
-function LVL_AwardShoutout(giverKey, targetKey)
-  EnsureDB()
-  local canAward, reason = LVL_CanShoutout(giverKey, targetKey)
-  if not canAward then
-    Print("|cff00ff00[LVL]|r Cannot give shoutout: " .. (reason or "unknown"))
-    return false
-  end
-  local sv2 = LeafVE_DB.shoutouts_v2
-  local now = Now()
-  LVL_EnsureShoutoutDailyReset(sv2)
-  -- Record in given table
-  if not sv2.given[giverKey] then sv2.given[giverKey] = {} end
-  sv2.given[giverKey][targetKey] = now
-  -- Record in received table
-  if not sv2.received[targetKey] then sv2.received[targetKey] = {} end
-  sv2.received[targetKey][giverKey] = now
-  -- Increment daily count
-  sv2.daily.awards[giverKey] = (sv2.daily.awards[giverKey] or 0) + 1
-  -- Award points to target
-  local awarded = LeafVE:AddPoints(targetKey, "S", SHOUTOUT_V2_POINTS)
-  if awarded and awarded > 0 then
-    LeafVE:AddToHistory(targetKey, "S", awarded, "Shoutout V2 from " .. giverKey)
-  end
-  LeafVE:CheckAndAwardBadge(giverKey, "first_shoutout_given")
-  local remaining = SHOUTOUT_V2_MAX_PER_DAY - sv2.daily.awards[giverKey]
-  Print(string.format("|cff00ff00[LVL]|r Shoutout sent to %s! +%d LP (%d remaining today)", targetKey, SHOUTOUT_V2_POINTS, remaining))
-  -- Broadcast via guild channel
-  if InGuild() then
-    SendAddonMessage("LeafVE", "SHOUTOUT:" .. giverKey .. ":" .. targetKey, "GUILD")
-  end
-  return true
-end
-
 
 function LeafVE:BroadcastMyAchievements()
   EnsureDB()
@@ -2150,22 +1871,6 @@ function LeafVE:BroadcastBadges()
   end
 end
 
--- Broadcast this player's badge-progress counters so guildmates can display
--- accurate progress bars when viewing this player's badge collection.
--- Called on login alongside BroadcastBadges().
-function LeafVE:BroadcastBadgeProgress()
-  if not InGuild() then return end
-  local me = ShortName(UnitName("player"))
-  if not me then return end
-  EnsureDB()
-  local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[me] and LeafVE_DB.loginStreaks[me].current) or 0
-  local groups  = (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[me]) or 0
-  local raids   = table.getn(LeafVE_DB.attendance and LeafVE_DB.attendance[me] or {})
-  local joinTS  = (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[me]) or 0
-  local payload = string.format("BADGEPROG:%s:%d:%d:%d:%d", me, streak, groups, raids, joinTS)
-  SendAddonMessage("LeafVE", payload, "GUILD")
-end
-
 function LeafVE:BroadcastLeaderboardData()
   local me = ShortName(UnitName("player"))
   if not me then return end
@@ -2196,20 +1901,51 @@ function LeafVE:BroadcastLeaderboardData()
   end
   
   for name, _ in pairs(knownPlayers) do
-    -- Lifetime: use only directly-observed alltime data as the base.
-    local lbase = LeafVE_DB.alltime[name] or {L = 0, G = 0, S = 0}
-    local lL, lG, lS = lbase.L or 0, lbase.G or 0, lbase.S or 0
-    if lL + lG + lS > 0 then
-      table.insert(data, string.format("L:%s:%d:%d:%d", name, lL, lG, lS))
-    end
+    -- Skip alts: their points will be pooled onto the main's entry below.
+    if not GetMainForPlayer(name) then
+      -- Lifetime: prefer local alltime (direct witness), fall back to synced lboard data.
+      -- Pool any alt points onto this main entry before broadcasting.
+      -- Skip entries with no points to avoid broadcasting zeros that could
+      -- overwrite correct data held by peers (defence-in-depth alongside the
+      -- higher-total-wins guard in ReceiveLeaderboardData).
+      local lbase = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name] or {L = 0, G = 0, S = 0}
+      local lL, lG, lS = lbase.L or 0, lbase.G or 0, lbase.S or 0
+      for altName, _ in pairs(knownPlayers) do
+        local altMain = GetMainForPlayer(altName)
+        if altMain and Lower(altMain) == Lower(name) then
+          local altPts = LeafVE_DB.alltime[altName] or LeafVE_DB.lboard.alltime[altName] or {L = 0, G = 0, S = 0}
+          -- Do NOT pool L (Login) points from alts; only G and S pool
+          lG = lG + (altPts.G or 0)
+          lS = lS + (altPts.S or 0)
+        end
+      end
+      if lL + lG + lS > 0 then
+        table.insert(data, string.format("L:%s:%d:%d:%d", name, lL, lG, lS))
+      end
 
-    -- Weekly: use only locally-aggregated data as the base (never synced weekly).
-    local wbase = weekAgg[name]
-    local wL = wbase and (wbase.L or 0) or 0
-    local wG = wbase and (wbase.G or 0) or 0
-    local wS = wbase and (wbase.S or 0) or 0
-    if wL + wG + wS > 0 then
-      table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, name, wL, wG, wS))
+      -- Weekly: prefer local aggregation, fall back to synced weekly data.
+      -- Pool any alt weekly points onto this main entry before broadcasting.
+      -- Skip entries with no points to avoid broadcasting zeros that could
+      -- overwrite correct data held by peers (defence-in-depth alongside the
+      -- higher-total-wins guard in ReceiveLeaderboardData).
+      local wbase = weekAgg[name] or syncedWeek[name]
+      local wL = wbase and (wbase.L or 0) or 0
+      local wG = wbase and (wbase.G or 0) or 0
+      local wS = wbase and (wbase.S or 0) or 0
+      for altName, _ in pairs(knownPlayers) do
+        local altMain = GetMainForPlayer(altName)
+        if altMain and Lower(altMain) == Lower(name) then
+          local altWpts = weekAgg[altName] or syncedWeek[altName]
+          if altWpts then
+            -- Do NOT pool L (Login) points from alts; only G and S pool
+            wG = wG + (altWpts.G or 0)
+            wS = wS + (altWpts.S or 0)
+          end
+        end
+      end
+      if wL + wG + wS > 0 then
+        table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, name, wL, wG, wS))
+      end
     end
   end
   
@@ -2236,13 +1972,7 @@ function LeafVE:BroadcastLeaderboardData()
   if table.getn(chunk) > 0 then
     SendAddonMessage("LeafVE", "LBOARD:"..table.concat(chunk, ","), "GUILD")
   end
-
-  -- Propagate the admin reset timestamp so offline players who missed the original
-  -- broadcast will wipe their stale data when they receive this sync response.
-  if LeafVE_GlobalDB and LeafVE_GlobalDB.lastAdminResetTS then
-    SendAddonMessage("LeafVE", "RESETTS:"..LeafVE_GlobalDB.lastAdminResetTS, "GUILD")
-  end
-
+  
 end
 
 function LeafVE:SendResyncRequest()
@@ -2337,17 +2067,29 @@ function LeafVE:MergeShoutoutHistory(payload)
             end
             local existing = LeafVE_DB.shoutouts[giver][target]
             if not existing then
-              -- New entry: record it for history/badge tracking only.
-              -- Points for shoutouts are awarded in real-time via the SHOUTOUT: handler.
+              -- New entry: record it and award the shoutout point under the actual shoutout date
+              -- (not today) so prior-week syncs don't inflate the current week's AggForThisWeek total.
               LeafVE_DB.shoutouts[giver][target] = timestamp
-              -- Only trigger badge checks for shoutouts from today so that
-              -- historical data synced after a reset does not retroactively
-              -- re-award badges.
-              if DayKeyFromTS(timestamp) == DayKey() then
-                self:CheckBadgeMilestones(target)
-                self:CheckAndAwardBadge(giver, "first_shoutout_given")
-                self:CheckAndAwardBadge(target, "first_shoutout_received")
-              end
+              local actualDay = DayKeyFromTS(timestamp)
+              if not LeafVE_DB.global[actualDay] then LeafVE_DB.global[actualDay] = {} end
+              if not LeafVE_DB.global[actualDay][target] then LeafVE_DB.global[actualDay][target] = {L=0, G=0, S=0} end
+              LeafVE_DB.global[actualDay][target].S = (LeafVE_DB.global[actualDay][target].S or 0) + 10
+              if not LeafVE_DB.alltime[target] then LeafVE_DB.alltime[target] = {L=0, G=0, S=0} end
+              LeafVE_DB.alltime[target].S = (LeafVE_DB.alltime[target].S or 0) + 10
+              if not LeafVE_DB.season[target] then LeafVE_DB.season[target] = {L=0, G=0, S=0} end
+              LeafVE_DB.season[target].S = (LeafVE_DB.season[target].S or 0) + 10
+              self:CheckBadgeMilestones(target)
+              self:AddToHistory(target, "S", 10, "Shoutout from "..giver.." (synced)")
+              if not LeafVE_DB.global[actualDay][giver] then LeafVE_DB.global[actualDay][giver] = {L=0, G=0, S=0} end
+              LeafVE_DB.global[actualDay][giver].S = (LeafVE_DB.global[actualDay][giver].S or 0) + 10
+              if not LeafVE_DB.alltime[giver] then LeafVE_DB.alltime[giver] = {L=0, G=0, S=0} end
+              LeafVE_DB.alltime[giver].S = (LeafVE_DB.alltime[giver].S or 0) + 10
+              if not LeafVE_DB.season[giver] then LeafVE_DB.season[giver] = {L=0, G=0, S=0} end
+              LeafVE_DB.season[giver].S = (LeafVE_DB.season[giver].S or 0) + 10
+              self:CheckBadgeMilestones(giver)
+              self:AddToHistory(giver, "S", 10, "Gave shoutout to "..target.." (synced)")
+              self:CheckAndAwardBadge(giver, "first_shoutout_given")
+              self:CheckAndAwardBadge(target, "first_shoutout_received")
               updated = true
             elseif timestamp > existing then
               -- Newer timestamp for an already-known entry: update only, no extra point
@@ -2388,8 +2130,7 @@ end
 -------------------------------------------------
 -- GEAR CACHING & BROADCAST
 -------------------------------------------------
-LeafVE.lastGearBroadcast  = 0
-LeafVE.lastStatsBroadcast = 0
+LeafVE.lastGearBroadcast = 0
 
 function LeafVE:ParseItemIDFromLink(link)
   if not link then return nil end
@@ -2495,129 +2236,7 @@ function LeafVE:BroadcastMyGear()
   end
 end
 
--------------------------------------------------
--- BCS STATS COMPUTE & BROADCAST
--------------------------------------------------
-
--- Compute all BCS-based stats for the local player and return a key/value table.
--- Short keys are used so the serialized payload fits in one 255-byte message.
-function LeafVE:ComputeMyBCSStats()
-  if not BCS then return nil end
-  BCS.needScanGear    = true
-  BCS.needScanTalents = true
-  BCS.needScanAuras   = true
-  BCS.needScanSkills  = true
-  BCS:RunScans()
-  BCS.needScanGear    = false
-  BCS.needScanTalents = false
-  BCS.needScanAuras   = false
-  BCS.needScanSkills  = false
-
-  local apBase, apPos, apNeg = UnitAttackPower("player")
-  local ap = (apBase or 0) + (apPos or 0) + (apNeg or 0)
-  local rap = 0
-  if UnitRangedAttackPower then
-    local rb, rp, rn = UnitRangedAttackPower("player")
-    rap = (rb or 0) + (rp or 0) + (rn or 0)
-  end
-
-  local hit          = BCS:GetHitRating() or 0
-  local mcrit        = BCS:GetCritChance() or 0
-  local rhit         = BCS:GetRangedHitRating() or 0
-  local rcrit        = BCS:GetRangedCritChance() or 0
-  local mhsk         = BCS:GetMHWeaponSkill() or 0
-  local rsk          = BCS:GetRangedWeaponSkill() or 0
-  local sp           = BCS:GetSpellPower() or 0
-  local shit         = BCS:GetSpellHitRating() or 0
-  local scrit        = BCS:GetSpellCritChance() or 0
-  local heal         = BCS:GetHealingPower() or 0
-  local manaBase, _, mp5 = BCS:GetManaRegen()
-  manaBase = manaBase or 0; mp5 = mp5 or 0
-  local _, spellHaste = BCS:GetHaste()
-  spellHaste = spellHaste or 0
-  local dodge  = GetDodgeChance and GetDodgeChance() or 0
-  local parry  = GetParryChance and GetParryChance() or 0
-  local block  = GetBlockChance and GetBlockChance() or 0
-  local defBase, defMod = 0, 0
-  if UnitDefense then
-    defBase, defMod = UnitDefense("player")
-    defBase = defBase or 0; defMod = defMod or 0
-  end
-  local defense = defBase + defMod
-  local _, armor = UnitArmor("player")
-  armor = armor or 0
-  local _, str  = UnitStat("player", 1)
-  local _, agi  = UnitStat("player", 2)
-  local _, sta  = UnitStat("player", 3)
-  local _, int_ = UnitStat("player", 4)
-  local _, spi  = UnitStat("player", 5)
-
-  return {
-    ap = ap,   hi = hit,  mc = mcrit,
-    ra = rap,  rh = rhit, rc = rcrit,
-    ms = mhsk, rs = rsk,
-    sp = sp,   sh = shit, sc = scrit, ss = spellHaste,
-    he = heal, m5 = mp5,  mr = manaBase,
-    st = str or 0,  ag = agi or 0,  sa = sta or 0,
-    ["in"] = int_ or 0, si = spi or 0,
-    ar = armor, de = defense, dg = dodge, pa = parry, bl = block,
-  }
-end
-
--- Serialize a stats table (from ComputeMyBCSStats) and broadcast it over the
--- guild addon channel so guildmates can cache and display it.
-function LeafVE:BroadcastMyStats()
-  if not InGuild() then return end
-  if not BCS then return end
-  local now = Now()
-  if (now - self.lastStatsBroadcast) < STATS_BROADCAST_THROTTLE then return end
-  self.lastStatsBroadcast = now
-
-  local me = ShortName(UnitName("player"))
-  if not me then return end
-
-  local s = self:ComputeMyBCSStats()
-  if not s then return end
-
-  EnsureDB()
-  LeafVE_GlobalDB.gearStatsCache[Lower(me)] = { stats = s, updatedAt = now }
-
-  -- Serialize non-zero values with short keys; floats get 1 decimal place
-  local parts = {}
-  local function addStat(key, val, fmt)
-    if val and val ~= 0 then
-      table.insert(parts, key .. "=" .. string.format(fmt, val))
-    end
-  end
-  addStat("ap", s.ap,  "%d")
-  addStat("hi", s.hi,  "%d")
-  addStat("mc", s.mc,  "%.1f")
-  addStat("ra", s.ra,  "%d")
-  addStat("rh", s.rh,  "%d")
-  addStat("rc", s.rc,  "%.1f")
-  addStat("ms", s.ms,  "%d")
-  addStat("rs", s.rs,  "%d")
-  addStat("sp", s.sp,  "%d")
-  addStat("sh", s.sh,  "%d")
-  addStat("sc", s.sc,  "%.1f")
-  addStat("ss", s.ss,  "%d")
-  addStat("he", s.he,  "%d")
-  addStat("m5", s.m5,  "%d")
-  addStat("mr", s.mr,  "%.0f")
-  addStat("st", s.st,  "%d")
-  addStat("ag", s.ag,  "%d")
-  addStat("sa", s.sa,  "%d")
-  addStat("in", s["in"], "%d")
-  addStat("si", s.si,  "%d")
-  addStat("ar", s.ar,  "%d")
-  addStat("de", s.de,  "%d")
-  addStat("dg", s.dg,  "%.1f")
-  addStat("pa", s.pa,  "%.1f")
-  addStat("bl", s.bl,  "%.1f")
-
-  local payload = "STATS:" .. me .. ":" .. tostring(now) .. ":" .. table.concat(parts, ",")
-  SendAddonMessage("LeafVE", payload, "GUILD")
-end
+-- Helper: compare two "major.minor" version strings numerically
 local function VersionLessThan(a, b)
   local amaj, amin = string.match(a or "0.0", "(%d+)%.(%d+)")
   local bmaj, bmin = string.match(b or "0.0", "(%d+)%.(%d+)")
@@ -2639,75 +2258,6 @@ local function IsSenderCompatible(sender)
 end
 
 function LeafVE:OnAddonMessage(prefix, message, channel, sender)
-  -- Handle LVL prefix messages (alt linking and guild-wide wipes)
-  if prefix == "LVL" then
-    if channel ~= "GUILD" and channel ~= "PARTY" and channel ~= "RAID" then return end
-    sender = ShortName(sender)
-    if not sender then return end
-    local me = ShortName(UnitName("player"))
-
-    -- MERGE_REQ|altKey|mainKey|altPoints
-    if string.sub(message, 1, 10) == "MERGE_REQ|" then
-      local rest = string.sub(message, 11)
-      local p1 = string.find(rest, "|")
-      if not p1 then return end
-      local altKey = string.sub(rest, 1, p1 - 1)
-      rest = string.sub(rest, p1 + 1)
-      local p2 = string.find(rest, "|")
-      local mainKey, altPtsStr
-      if p2 then
-        mainKey = string.sub(rest, 1, p2 - 1)
-        altPtsStr = string.sub(rest, p2 + 1)
-      else
-        mainKey = rest
-        altPtsStr = "0"
-      end
-      -- Officers see the merge request
-      if LeafVE:IsAdminRank() then
-        EnsureDB()
-        if not LeafVE_DB.pendingMerge then LeafVE_DB.pendingMerge = {} end
-        LeafVE_DB.pendingMerge[altKey] = { main = mainKey, t = Now() }
-        Print(string.format("|cff00ff00[LVL]|r Merge request: %s wants to link to %s (%s pts). Use /lve altapprove %s %s", altKey, mainKey, altPtsStr, altKey, mainKey))
-      end
-      return
-    end
-
-    -- MERGE_APPROVE|altKey|mainKey
-    if string.sub(message, 1, 14) == "MERGE_APPROVE|" then
-      if not LVL_IsAuthorizedSender(sender) then return end
-      local rest = string.sub(message, 15)
-      local p1 = string.find(rest, "|")
-      if not p1 then return end
-      local altKey = string.sub(rest, 1, p1 - 1)
-      local mainKey = string.sub(rest, p1 + 1)
-      EnsureDB()
-      LeafVE_DB.links[altKey] = mainKey
-      LeafVE_DB.lastLinkChange[altKey] = Now()
-      if LeafVE_DB.pendingMerge then LeafVE_DB.pendingMerge[altKey] = nil end
-      if me and Lower(me) == Lower(altKey) then
-        Print(string.format("|cff00ff00[LVL]|r Your alt has been linked to %s by %s!", mainKey, sender))
-        if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.alt and LeafVE.UI.panels.alt:IsVisible() then
-          LeafVE.UI:RefreshAltPanel()
-        end
-      end
-      return
-    end
-
-    -- WIPE_ALL|wipeId
-    if string.sub(message, 1, 9) == "WIPE_ALL|" then
-      if not LVL_IsAuthorizedSender(sender) then return end
-      local wipeId = string.sub(message, 10)
-      EnsureDB()
-      local stored = (LeafVE_DB.meta and LeafVE_DB.meta.lastWipeId) or ""
-      if wipeId == stored then return end  -- already processed
-      if LeafVE_DB.meta then LeafVE_DB.meta.lastWipeId = wipeId end
-      LVL_FullWipeLocal()
-      DEFAULT_CHAT_FRAME:AddMessage("|cff00ff00[LVL]|r Guild-wide point reset received from " .. sender .. ". All data cleared.")
-      return
-    end
-    return
-  end
-
   if prefix ~= "LeafVE" then return end
   if channel ~= "GUILD" and channel ~= "PARTY" and channel ~= "RAID" then return end
   
@@ -2728,20 +2278,18 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     local ver = string.sub(message, 12)
     if not LeafVE.versionResponses then LeafVE.versionResponses = {} end
     LeafVE.versionResponses[sender] = ver
-    -- Only print version warnings when explicitly requested via the Admin "Check Addon Versions"
-    -- button AND only for players with an admin guild rank.
-    if LeafVE.adminVersionCheckActive and LeafVE:IsAdminRank() then
-      local myVer = LeafVE.version
-      if not LeafVE.shownVersionNag and VersionLessThan(myVer, ver) then
-        LeafVE.shownVersionNag = true
-        Print("|cFFFFAA00⚠ Your Leaf Village Legends addon is outdated! You have v"..myVer..", latest is v"..ver..". Please update!|r")
-      end
-      if VersionLessThan(ver, LeafVE.minCompatVersion) then
-        if not LeafVE.warnedOldVersion then LeafVE.warnedOldVersion = {} end
-        if not LeafVE.warnedOldVersion[sender] then
-          LeafVE.warnedOldVersion[sender] = true
-          Print("|cFFFF4444⚠ "..sender.." is running an outdated version (v"..ver..") and their synced data will not be accepted. Ask them to update to v"..LeafVE.minCompatVersion.."+.|r")
-        end
+    -- Auto-nag if someone has a higher version than us
+    local myVer = LeafVE.version
+    if not LeafVE.shownVersionNag and VersionLessThan(myVer, ver) then
+      LeafVE.shownVersionNag = true
+      Print("|cFFFFAA00⚠ Your Leaf Village Legends addon is outdated! You have v"..myVer..", latest is v"..ver..". Please update!|r")
+    end
+    -- Warn once when a guildmate's version is below the minimum compatible version
+    if VersionLessThan(ver, LeafVE.minCompatVersion) then
+      if not LeafVE.warnedOldVersion then LeafVE.warnedOldVersion = {} end
+      if not LeafVE.warnedOldVersion[sender] then
+        LeafVE.warnedOldVersion[sender] = true
+        Print("|cFFFF4444⚠ "..sender.." is running an outdated version (v"..ver..") and their synced data will not be accepted. Ask them to update to v"..LeafVE.minCompatVersion.."+.|r")
       end
     end
     return
@@ -2894,40 +2442,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     end
     
     return
-
-  -- Parse badge-progress sync message: BADGEPROG:name:streak:groups:raids:joinTS
-  elseif string.sub(message, 1, 10) == "BADGEPROG:" then
-    local rest = string.sub(message, 11)
-    -- split on ":"
-    local parts = {}
-    local s = 1
-    while s <= string.len(rest) do
-      local c = string.find(rest, ":", s)
-      if c then
-        table.insert(parts, string.sub(rest, s, c - 1))
-        s = c + 1
-      else
-        table.insert(parts, string.sub(rest, s))
-        s = string.len(rest) + 1
-      end
-    end
-    if table.getn(parts) >= 5 then
-      local pname   = ShortName(parts[1]) or parts[1]
-      local streak  = tonumber(parts[2]) or 0
-      local groups  = tonumber(parts[3]) or 0
-      local raids   = tonumber(parts[4]) or 0
-      local joinTS  = tonumber(parts[5]) or 0
-      EnsureDB()
-      if not LeafVE_DB.peerProgress then LeafVE_DB.peerProgress = {} end
-      LeafVE_DB.peerProgress[pname] = { streak = streak, groups = groups, raids = raids, joinTS = joinTS }
-      -- Refresh badge tab if it is currently showing this player
-      if LeafVE.UI and LeafVE.UI.cardCurrentPlayer == pname then
-        if LeafVE.UI.panels and LeafVE.UI.panels.badges and LeafVE.UI.panels.badges:IsVisible() then
-          LeafVE.UI:RefreshBadges()
-        end
-      end
-    end
-    return
     
   -- Parse shoutout sync message
   elseif string.sub(message, 1, 9) == "SHOUTOUT:" then
@@ -2961,6 +2475,7 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
               LeafVE_DB.shoutouts[msgGiver][targetName] = Now()
               local shoutPtsIncoming = (LeafVE_DB.options and LeafVE_DB.options.shoutoutPoints) or 10
               self:AddPoints(targetName, "S", shoutPtsIncoming)
+              self:AddPoints(msgGiver, "S", shoutPtsIncoming)
             end
             -- If we are the shoutout recipient, award received badges on our machine
             if me and Lower(me) == Lower(targetName) then
@@ -3005,11 +2520,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     
     -- **NEW: Parse leaderboard sync message**
   elseif string.sub(message, 1, 7) == "LBOARD:" then
-    -- Ignore our own broadcasts: WoW echoes guild addon messages back to the sender.
-    -- Processing our own echo would store already-pooled data as the base for the next
-    -- broadcast, causing alt G/S contributions to accumulate every 5 minutes.
-    local me = ShortName(UnitName("player"))
-    if me and sender == me then return end
     if not IsSenderCompatible(sender) then return end
     local lboardData = string.sub(message, 8)
     
@@ -3093,14 +2603,7 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     local senderInfo = LeafVE.guildRosterCache[Lower(sender)]
     local senderRank = senderInfo and senderInfo.rank and Lower(senderInfo.rank) or ""
     if ADMIN_RANKS[senderRank] then
-      -- "LVE_ADMIN_RESET_LEAF_ALL:" is 25 chars; timestamp starts at position 26
-      local incomingTS = tonumber(string.sub(message, 26)) or 0
-      local localTS = LeafVE_GlobalDB and LeafVE_GlobalDB.lastAdminResetTS or 0
-      if incomingTS > 0 and incomingTS > localTS then
-        EnsureDB()
-        LeafVE_GlobalDB.lastAdminResetTS = incomingTS
-        LeafVE:HardResetLeafPoints_Local()
-      end
+      LeafVE:HardResetLeafPoints_Local()
     end
     return
 
@@ -3119,14 +2622,22 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     -- No longer used; configurable admin settings have been removed.
     return
 
-  -- Handle propagated admin reset timestamp (peer-to-peer propagation for offline catch-up)
-  elseif string.sub(message, 1, 8) == "RESETTS:" then
-    local incomingTS = tonumber(string.sub(message, 9)) or 0
-    local localTS = LeafVE_GlobalDB and LeafVE_GlobalDB.lastAdminResetTS or 0
-    if incomingTS > 0 and incomingTS > localTS then
+  -- Handle alt-main link broadcast from a guild member
+  elseif string.sub(message, 1, 8) == "ALTLINK:" then
+    local rest = string.sub(message, 9)
+    -- Format: "ALTLINK:altName:mainName"  or  "ALTLINK:altName:" (unlink)
+    local colonPos = string.find(rest, ":")
+    if colonPos then
+      local altName  = string.sub(rest, 1, colonPos - 1)
+      local mainName = string.sub(rest, colonPos + 1)
       EnsureDB()
-      LeafVE_GlobalDB.lastAdminResetTS = incomingTS
-      LeafVE:HardResetLeafPoints_Local()
+      if altName ~= "" then
+        if mainName ~= "" then
+          LeafVE_GlobalDB.guildAltLinks[altName] = mainName
+        else
+          LeafVE_GlobalDB.guildAltLinks[altName] = nil
+        end
+      end
     end
     return
 
@@ -3200,56 +2711,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
         if LeafVE.UI.panels.leaderWeek and LeafVE.UI.panels.leaderWeek:IsVisible() then
           LeafVE.UI:RefreshLeaderboard("leaderWeek")
         end
-      end
-    end
-    return
-
-  -- Handle BCS stats broadcast from a guild member
-  elseif string.sub(message, 1, 6) == "STATS:" then
-    local rest = string.sub(message, 7)
-    -- Format: STATS:<playerName>:<updatedAt>:<key>=<val>,...
-    local firstColon = string.find(rest, ":")
-    if not firstColon then return end
-    local declaredName = string.sub(rest, 1, firstColon - 1)
-    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) then return end
-    rest = string.sub(rest, firstColon + 1)
-    local secondColon = string.find(rest, ":")
-    if not secondColon then return end
-    local updatedAt = tonumber(string.sub(rest, 1, secondColon - 1)) or Now()
-    local statData = string.sub(rest, secondColon + 1)
-
-    EnsureDB()
-    local nameLower = Lower(sender)
-    local cached = LeafVE_GlobalDB.gearStatsCache[nameLower]
-    if cached and cached.updatedAt and updatedAt < cached.updatedAt then return end
-
-    local stats = {}
-    local startPos = 1
-    local statDataLen = string.len(statData)
-    while startPos <= statDataLen do
-      local commaPos = string.find(statData, ",", startPos)
-      local entry
-      if commaPos then
-        entry = string.sub(statData, startPos, commaPos - 1)
-        startPos = commaPos + 1
-      else
-        entry = string.sub(statData, startPos)
-        startPos = statDataLen + 1
-      end
-      local eqPos = string.find(entry, "=")
-      if eqPos then
-        local k = string.sub(entry, 1, eqPos - 1)
-        local v = tonumber(string.sub(entry, eqPos + 1))
-        if k ~= "" and v then stats[k] = v end
-      end
-    end
-
-    LeafVE_GlobalDB.gearStatsCache[nameLower] = { stats = stats, updatedAt = updatedAt }
-
-    -- Refresh gear popup if currently viewing this sender
-    if LeafVE.UI and LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
-      if LeafVE.UI.cardCurrentPlayer and Lower(LeafVE.UI.cardCurrentPlayer) == nameLower then
-        LeafVE.UI:RefreshGearPopup(LeafVE.UI.cardCurrentPlayer)
       end
     end
     return
@@ -4473,37 +3934,23 @@ function LeafVE.UI:ShowPlayerCard(playerName)
       self.cardModel:SetPosition(0, 0, 0)
       self.cardModel:SetFacing(0.5)
     end)
-    -- Fallback: if model didn't load, show class icon instead of empty model
-    local modelPath = self.cardModel:GetModel()
-    if not modelPath or modelPath == "" then
-      self.cardModel:Hide()
-      self.cardClassIconFrame:Show()
-      local classIconPath = CLASS_ICONS[class] or LEAF_FALLBACK
-      self.cardClassIcon:SetTexture(classIconPath)
-      self.cardClassIcon:SetVertexColor(1, 1, 1, 1)
-      if self.cardPortraitTypeText then
-        self.cardPortraitTypeText:SetText("|cFFFFAA00"..class.."|r")
+    if self.cardPortraitTypeText then
+      self.cardPortraitTypeText:SetText("|cFF00FF00Live|r")
+    end
+    -- Apply faction gradient background (red=Horde, blue=Alliance) with gold border.
+    if self.cardModelBG then
+      local faction = UnitFactionGroup(unitToken)
+      if faction == "Horde" then
+        self.cardModelBG:SetGradientAlpha("VERTICAL", 0.30, 0.02, 0.02, 1, 0.70, 0.08, 0.08, 1)
+      elseif faction == "Alliance" then
+        self.cardModelBG:SetGradientAlpha("VERTICAL", 0.02, 0.12, 0.35, 1, 0.08, 0.30, 0.75, 1)
+      else
+        self.cardModelBG:SetGradientAlpha("VERTICAL", 0.06, 0.06, 0.08, 1, 0.12, 0.12, 0.16, 1)
       end
-      if self.cardModelBG then self.cardModelBG:Hide() end
-    else
-      if self.cardPortraitTypeText then
-        self.cardPortraitTypeText:SetText("|cFF00FF00Live|r")
-      end
-      -- Apply faction gradient background (red=Horde, blue=Alliance) with gold border.
-      if self.cardModelBG then
-        local faction = UnitFactionGroup(unitToken)
-        if faction == "Horde" then
-          self.cardModelBG:SetGradientAlpha("VERTICAL", 0.30, 0.02, 0.02, 1, 0.70, 0.08, 0.08, 1)
-        elseif faction == "Alliance" then
-          self.cardModelBG:SetGradientAlpha("VERTICAL", 0.02, 0.12, 0.35, 1, 0.08, 0.30, 0.75, 1)
-        else
-          self.cardModelBG:SetGradientAlpha("VERTICAL", 0.06, 0.06, 0.08, 1, 0.12, 0.12, 0.16, 1)
-        end
-        self.cardModelBG:Show()
-      end
-      if self.cardPortraitContainer then
-        self.cardPortraitContainer:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 1)
-      end
+      self.cardModelBG:Show()
+    end
+    if self.cardPortraitContainer then
+      self.cardPortraitContainer:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 1)
     end
   else
     self.cardModel:Hide()
@@ -4883,49 +4330,6 @@ local function FormatGearStats(stats, class)
   return table.concat(lines, "\n")
 end
 
--- Format a stats table into organized vertical category layout.
--- Accepts either the short-key table from BroadcastMyStats or a direct stat table.
-local function FormatBCSStats(s)
-  if not s then return "|cFF888888Awaiting stats broadcast...|r" end
-  local G = "|cFFFFD700"
-  local W = "|cFFFFFFFF"
-  local E = "|r"
-  local ap   = s.ap  or 0;  local hi  = s.hi  or 0;  local mc  = s.mc  or 0;  local ms  = s.ms or 0
-  local sp   = s.sp  or 0;  local sh  = s.sh  or 0;  local sc  = s.sc  or 0
-  local he   = s.he  or 0;  local ss  = s.ss  or 0;  local m5  = s.m5  or 0
-  local str_ = s.st  or 0;  local agi = s.ag  or 0;  local sta = s.sa  or 0
-  local int_ = s["in"] or 0; local spi = s.si or 0
-  local ar   = s.ar  or 0;  local de  = s.de  or 0
-  local dg   = s.dg  or 0;  local pa  = s.pa  or 0;  local bl  = s.bl  or 0
-  local lines = {}
-  table.insert(lines, G.."Melee"..E)
-  table.insert(lines, string.format("  Attack Power: "..W.."%d"..E, ap))
-  table.insert(lines, string.format("  Hit: "..W.."%d%%"..E, hi))
-  table.insert(lines, string.format("  Crit: "..W.."%.1f%%"..E, mc))
-  table.insert(lines, string.format("  Weapon Skill: "..W.."%d"..E, ms))
-  table.insert(lines, "")
-  table.insert(lines, G.."Spell"..E)
-  table.insert(lines, string.format("  Spell Power: "..W.."%d"..E, sp))
-  table.insert(lines, string.format("  Spell Hit: "..W.."%d%%"..E, sh))
-  table.insert(lines, string.format("  Spell Crit: "..W.."%.1f%%"..E, sc))
-  table.insert(lines, string.format("  Healing Power: "..W.."%d"..E, he))
-  table.insert(lines, string.format("  Haste: "..W.."%d%%"..E, ss))
-  table.insert(lines, string.format("  MP5: "..W.."%d"..E, m5))
-  table.insert(lines, "")
-  table.insert(lines, G.."Base Stats"..E)
-  table.insert(lines, string.format("  Str: "..W.."%d"..E.."  Agi: "..W.."%d"..E, str_, agi))
-  table.insert(lines, string.format("  Sta: "..W.."%d"..E.."  Int: "..W.."%d"..E, sta, int_))
-  table.insert(lines, string.format("  Spi: "..W.."%d"..E, spi))
-  table.insert(lines, "")
-  table.insert(lines, G.."Defense"..E)
-  table.insert(lines, string.format("  Armor: "..W.."%d"..E, ar))
-  table.insert(lines, string.format("  Defense: "..W.."%d"..E, de))
-  table.insert(lines, string.format("  Dodge: "..W.."%.1f%%"..E, dg))
-  table.insert(lines, string.format("  Parry: "..W.."%.1f%%"..E, pa))
-  table.insert(lines, string.format("  Block: "..W.."%.1f%%"..E, bl))
-  return table.concat(lines, "\n")
-end
-
 function LeafVE.UI:CreateGearPopup()
   if self.gearPopup then return end
 
@@ -4982,7 +4386,7 @@ function LeafVE.UI:CreateGearPopup()
   popup.refreshBtn = refreshBtn
 
   -- Left column label
-  local slotLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  local slotLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   slotLabel:SetPoint("TOPLEFT", popup, "TOPLEFT", 15, -68)
   slotLabel:SetText("|cFFFFD700Equipment|r")
 
@@ -5000,12 +4404,12 @@ function LeafVE.UI:CreateGearPopup()
   popup.slotChild = slotChild
 
   -- Right column label
-  local statLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  local statLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   statLabel:SetPoint("TOPLEFT", popup, "TOPLEFT", 325, -68)
   statLabel:SetText("|cFFFFD700Important Stats|r")
 
   -- Stats text
-  local statsText = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  local statsText = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   statsText:SetPoint("TOPLEFT", statLabel, "BOTTOMLEFT", 0, -8)
   statsText:SetWidth(210)
   statsText:SetJustifyH("LEFT")
@@ -5064,9 +4468,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
 
   local scrollChild = self.gearPopup.slotChild
   local yOffset     = -5
-  local entryH      = 30
-  local me = ShortName(UnitName("player"))
-  local isLocalPlayer = me and Lower(playerName) == Lower(me)
+  local entryH      = 20
 
   if snapshot and snapshot.slots then
     for i = 1, table.getn(GEAR_SLOT_NAMES) do
@@ -5080,21 +4482,15 @@ function LeafVE.UI:RefreshGearPopup(playerName)
         entry:SetHeight(entryH)
         entry:SetWidth(265)
 
-        local iconTex = entry:CreateTexture(nil, "OVERLAY")
-        iconTex:SetWidth(24)
-        iconTex:SetHeight(24)
-        iconTex:SetPoint("LEFT", entry, "LEFT", 2, 0)
-        entry.iconTex = iconTex
-
-        local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        labelFS:SetPoint("LEFT", entry, "LEFT", 28, 0)
-        labelFS:SetWidth(75)
+        local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        labelFS:SetPoint("LEFT", entry, "LEFT", 2, 0)
+        labelFS:SetWidth(78)
         labelFS:SetJustifyH("LEFT")
         entry.labelFS = labelFS
 
-        local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        itemFS:SetPoint("LEFT", labelFS, "RIGHT", 2, 0)
-        itemFS:SetWidth(157)
+        local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        itemFS:SetPoint("LEFT", labelFS, "RIGHT", 4, 0)
+        itemFS:SetWidth(180)
         itemFS:SetJustifyH("LEFT")
         entry.itemFS = itemFS
 
@@ -5116,25 +4512,6 @@ function LeafVE.UI:RefreshGearPopup(playerName)
       entry:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 2, yOffset)
       entry.itemId = itemId
       entry.labelFS:SetText("|cFFAAAAAA" .. label .. ":|r")
-
-      -- Determine icon texture: live for local player, from item cache for others
-      local slotID = GEAR_SLOT_IDS[slotName]
-      local iconTexture = nil
-      if isLocalPlayer and slotID then
-        iconTexture = GetInventoryItemTexture("player", slotID)
-      elseif itemId then
-        local _, _, _, _, _, _, _, _, _, itemTex = GetItemInfo(itemId)
-        iconTexture = itemTex
-      end
-      if iconTexture then
-        entry.iconTex:SetTexture(iconTexture)
-        entry.iconTex:Show()
-      elseif itemId then
-        entry.iconTex:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
-        entry.iconTex:Show()
-      else
-        entry.iconTex:Hide()
-      end
 
       if itemId then
         local itemName, _, itemRarity = GetItemInfo(itemId)
@@ -5161,7 +4538,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
       end
 
       entry:Show()
-      yOffset = yOffset - entryH - 6
+      yOffset = yOffset - entryH - 2
     end
   else
     local entry = self.gearPopup.slotEntries[1]
@@ -5169,19 +4546,14 @@ function LeafVE.UI:RefreshGearPopup(playerName)
       entry = CreateFrame("Frame", nil, scrollChild)
       entry:SetHeight(entryH)
       entry:SetWidth(265)
-      local iconTex = entry:CreateTexture(nil, "OVERLAY")
-      iconTex:SetWidth(24)
-      iconTex:SetHeight(24)
-      iconTex:SetPoint("LEFT", entry, "LEFT", 2, 0)
-      entry.iconTex = iconTex
-      local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-      labelFS:SetPoint("LEFT", entry, "LEFT", 28, 0)
-      labelFS:SetWidth(75)
+      local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      labelFS:SetPoint("LEFT", entry, "LEFT", 2, 0)
+      labelFS:SetWidth(78)
       labelFS:SetJustifyH("LEFT")
       entry.labelFS = labelFS
-      local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-      itemFS:SetPoint("LEFT", labelFS, "RIGHT", 2, 0)
-      itemFS:SetWidth(157)
+      local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      itemFS:SetPoint("LEFT", labelFS, "RIGHT", 4, 0)
+      itemFS:SetWidth(180)
       itemFS:SetJustifyH("LEFT")
       entry.itemFS = itemFS
       self.gearPopup.slotEntries[1] = entry
@@ -5190,72 +4562,19 @@ function LeafVE.UI:RefreshGearPopup(playerName)
     entry.labelFS:SetText("")
     entry.itemFS:SetText("|cFF888888No gear data available|r")
     entry.itemId = nil
-    entry.iconTex:Hide()
     entry:Show()
-    yOffset = yOffset - entryH - 6
+    yOffset = yOffset - entryH - 2
   end
 
   scrollChild:SetHeight(math.max(1, math.abs(yOffset) + 20))
 
-  -- Compute and display organized stats
+  -- Compute and display class-aware stats
   local statsText = "|cFF888888No stats available|r"
-  if isLocalPlayer and BCS and BCS.RunScans then
-    -- Local player: use BCS for live computed stats
-    BCS.needScanGear    = true
-    BCS.needScanTalents = true
-    BCS.needScanAuras   = true
-    BCS.needScanSkills  = true
-    BCS:RunScans()
-    BCS.needScanGear    = false
-    BCS.needScanTalents = false
-    BCS.needScanAuras   = false
-    BCS.needScanSkills  = false
-
-    local apBase, apPos, apNeg = UnitAttackPower("player")
-    local ap = (apBase or 0) + (apPos or 0) + (apNeg or 0)
-    local hit         = BCS:GetHitRating() or 0
-    local mcrit       = BCS:GetCritChance() or 0
-    local mhSkill     = BCS:GetMHWeaponSkill() or 0
-    local spellPower  = BCS:GetSpellPower() or 0
-    local spellHit    = BCS:GetSpellHitRating() or 0
-    local spellCrit   = BCS:GetSpellCritChance() or 0
-    local healing     = BCS:GetHealingPower() or 0
-    local _, spellHaste = BCS:GetHaste()
-    spellHaste = spellHaste or 0
-    local _, _, manaMP5 = BCS:GetManaRegen()
-    manaMP5 = manaMP5 or 0
-    local _, str_ = UnitStat("player", 1)
-    local _, agi  = UnitStat("player", 2)
-    local _, sta  = UnitStat("player", 3)
-    local _, int_ = UnitStat("player", 4)
-    local _, spi  = UnitStat("player", 5)
-    local dodge  = GetDodgeChance and GetDodgeChance() or 0
-    local parry  = GetParryChance and GetParryChance() or 0
-    local block  = GetBlockChance and GetBlockChance() or 0
-    local defBase, defMod = 0, 0
-    if UnitDefense then
-      defBase, defMod = UnitDefense("player")
-      defBase = defBase or 0; defMod = defMod or 0
-    end
-    local _, armor = UnitArmor("player")
-    statsText = FormatBCSStats({
-      ap = ap, hi = hit, mc = mcrit, ms = mhSkill,
-      sp = spellPower, sh = spellHit, sc = spellCrit, he = healing,
-      ss = spellHaste, m5 = manaMP5,
-      st = str_ or 0, ag = agi or 0, sa = sta or 0,
-      ["in"] = int_ or 0, si = spi or 0,
-      ar = armor or 0, de = defBase + defMod,
-      dg = dodge, pa = parry, bl = block,
-    })
-  else
-    -- Other players: check for cached BCS stats from broadcast
-    EnsureDB()
-    local cachedBCS = LeafVE_GlobalDB.gearStatsCache and LeafVE_GlobalDB.gearStatsCache[nameLower]
-    if cachedBCS and cachedBCS.stats then
-      statsText = FormatBCSStats(cachedBCS.stats)
-    else
-      statsText = "|cFF888888Awaiting stats broadcast...|r"
-    end
+  if snapshot and snapshot.slots then
+    local guildInfo = LeafVE:GetGuildInfo(playerName)
+    local class     = guildInfo and guildInfo.class or "Unknown"
+    local stats     = ComputeGearStats(snapshot.slots)
+    statsText       = FormatGearStats(stats, class)
   end
   self.gearPopup.statsText:SetText(statsText)
 end
@@ -5692,7 +5011,6 @@ local legend = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   legend:SetWidth(maxWidth)
   legend:SetJustifyH("LEFT")
   legend:SetText("|cFFAAAAAAL = Login  |  G = Group  |  S = Shoutout|r")
-
 end
 
 local function BuildShoutoutsPanel(panel)
@@ -6084,191 +5402,6 @@ local function CreateScrollablePanel(panel, title, desc)
   panel.scrollBar = scrollBar
 end
 
--------------------------------------------------
--- ALT LINKING PANEL (FEATURE A)
--------------------------------------------------
-
-local function BuildAltPanel(panel)
-  -- Header background
-  local headerBG = panel:CreateTexture(nil, "BACKGROUND")
-  headerBG:SetPoint("TOP", panel, "TOP", -15, -10)
-  headerBG:SetWidth(420)
-  headerBG:SetHeight(50)
-  headerBG:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  headerBG:SetVertexColor(0.15, 0.15, 0.18, 0.9)
-
-  local accentTop = panel:CreateTexture(nil, "BORDER")
-  accentTop:SetPoint("TOPLEFT", headerBG, "TOPLEFT", 0, 0)
-  accentTop:SetPoint("TOPRIGHT", headerBG, "TOPRIGHT", 0, 0)
-  accentTop:SetHeight(3)
-  accentTop:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  accentTop:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 1)
-
-  local h = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-  h:SetPoint("TOP", headerBG, "TOP", 0, -10)
-  h:SetText("|cFFFFD700Alt Linking|r")
-
-  local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  subtitle:SetPoint("TOP", h, "BOTTOM", 0, -3)
-  subtitle:SetText("|cFF888888Link an alt to deposit points to your main character.|r")
-
-  -- Status text
-  local statusText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  statusText:SetPoint("TOPLEFT", panel, "TOPLEFT", 14, -80)
-  statusText:SetWidth(380)
-  statusText:SetJustifyH("LEFT")
-  statusText:SetText("|cFFAAAAAA Not linked|r")
-  panel.altStatusText = statusText
-
-  -- Main name input (visible when not linked)
-  local inputLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  inputLabel:SetPoint("TOPLEFT", panel, "TOPLEFT", 14, -110)
-  inputLabel:SetText("Main character name:")
-  panel.altInputLabel = inputLabel
-
-  local mainInput = CreateFrame("EditBox", nil, panel)
-  mainInput:SetPoint("TOPLEFT", inputLabel, "BOTTOMLEFT", 0, -4)
-  mainInput:SetWidth(200)
-  mainInput:SetHeight(20)
-  mainInput:SetAutoFocus(false)
-  mainInput:SetFontObject(GameFontHighlight)
-  mainInput:SetMaxLetters(50)
-  local inputBG = CreateFrame("Frame", nil, panel)
-  inputBG:SetPoint("TOPLEFT", mainInput, "TOPLEFT", -4, 4)
-  inputBG:SetPoint("BOTTOMRIGHT", mainInput, "BOTTOMRIGHT", 4, -4)
-  inputBG:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 12,
-    insets = {left = 3, right = 3, top = 3, bottom = 3}
-  })
-  inputBG:SetBackdropColor(0, 0, 0, 0.5)
-  inputBG:SetBackdropBorderColor(0.3, 0.3, 0.3, 1)
-  inputBG:SetFrameLevel(mainInput:GetFrameLevel() - 1)
-  panel.altMainInput = mainInput
-
-  -- Link/Unlink button
-  local linkBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-  linkBtn:SetWidth(130)
-  linkBtn:SetHeight(22)
-  linkBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 14, -150)
-  linkBtn:SetText("Link Points")
-  SkinButtonAccent(linkBtn)
-  linkBtn:SetScript("OnClick", function()
-    EnsureDB()
-    local myKey = LVL_GetCharKey()
-    if LVL_IsAltLinked(myKey) then
-      -- Unlink
-      local remain = LVL_Remain(LeafVE_DB.lastLinkChange[myKey], SECONDS_PER_DAY)
-      if remain > 0 then
-        Print("|cff00ff00[LVL]|r Cannot unlink yet. " .. LVL_FormatTime(remain) .. " remaining.")
-        return
-      end
-      LeafVE_DB.links[myKey] = nil
-      LeafVE_DB.lastLinkChange[myKey] = Now()
-      Print("|cff00ff00[LVL]|r Unlinked successfully.")
-      if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.alt then
-        LeafVE.UI:RefreshAltPanel()
-      end
-    else
-      -- Link: check cooldown
-      local remain = LVL_Remain(LeafVE_DB.lastLinkChange[myKey], SECONDS_PER_DAY)
-      if remain > 0 then
-        Print("|cff00ff00[LVL]|r Cannot link yet. " .. LVL_FormatTime(remain) .. " remaining.")
-        return
-      end
-      local mainName = Trim(panel.altMainInput:GetText() or "")
-      if not mainName or mainName == "" then
-        Print("|cff00ff00[LVL]|r Please enter a main character name.")
-        return
-      end
-      -- Send merge request to guild
-      local myPts = 0
-      local allT = LeafVE_DB.alltime and LeafVE_DB.alltime[myKey] or {L=0,G=0,S=0}
-      myPts = (allT.G or 0) + (allT.S or 0)
-      EnsureDB()
-      if not LeafVE_DB.pendingMerge then LeafVE_DB.pendingMerge = {} end
-      LeafVE_DB.pendingMerge[myKey] = { main = mainName, t = Now() }
-      if InGuild() then
-        SendAddonMessage("LVL", "MERGE_REQ|" .. myKey .. "|" .. mainName .. "|" .. myPts, "GUILD")
-      end
-      Print("|cff00ff00[LVL]|r Link request sent for " .. myKey .. " → " .. mainName .. ". Awaiting officer approval.")
-    end
-  end)
-  panel.altLinkBtn = linkBtn
-
-  -- Deposit Now button (visible only when linked)
-  local depositBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-  depositBtn:SetWidth(130)
-  depositBtn:SetHeight(22)
-  depositBtn:SetPoint("LEFT", linkBtn, "RIGHT", 8, 0)
-  depositBtn:SetText("Deposit Now")
-  SkinButtonAccent(depositBtn)
-  depositBtn:SetScript("OnClick", function()
-    EnsureDB()
-    local myKey = LVL_GetCharKey()
-    if not LVL_IsAltLinked(myKey) then
-      Print("|cff00ff00[LVL]|r Not linked to a main character.")
-      return
-    end
-    local remain = LVL_Remain(LeafVE_DB.lastDeposit[myKey], SECONDS_PER_DAY)
-    if remain > 0 then
-      Print("|cff00ff00[LVL]|r Deposit on cooldown. " .. LVL_FormatTime(remain) .. " remaining.")
-      return
-    end
-    local mainKey = LVL_GetMainKey(myKey)
-    local altAlltime = LeafVE_DB.alltime and LeafVE_DB.alltime[myKey] or {L=0, G=0, S=0}
-    local amtG = altAlltime.G or 0
-    local amtS = altAlltime.S or 0
-    local amt = amtG + amtS
-    if amt > 0 then
-      altAlltime.G = 0
-      altAlltime.S = 0
-      LeafVE_DB.alltime[myKey] = altAlltime
-      local mainAlltime = LeafVE_DB.alltime[mainKey] or {L=0, G=0, S=0}
-      mainAlltime.G = (mainAlltime.G or 0) + amtG
-      mainAlltime.S = (mainAlltime.S or 0) + amtS
-      LeafVE_DB.alltime[mainKey] = mainAlltime
-    end
-    LeafVE_DB.lastDeposit[myKey] = Now()
-    Print(string.format("|cff00ff00[LVL]|r Deposited %d points to %s. (24h cooldown started)", amt, mainKey))
-    if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.alt then
-      LeafVE.UI:RefreshAltPanel()
-    end
-  end)
-  panel.altDepositBtn = depositBtn
-
-  -- Cooldown display text
-  local cdText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  cdText:SetPoint("TOPLEFT", panel, "TOPLEFT", 14, -185)
-  cdText:SetWidth(420)
-  cdText:SetJustifyH("LEFT")
-  cdText:SetText("")
-  panel.altCooldownText = cdText
-
-  -- OnShow / OnHide: drive a per-second timer only while this panel is visible
-  local tickElapsed = 0
-  panel:SetScript("OnShow", function()
-    tickElapsed = 0
-    panel:SetScript("OnUpdate", function()
-      tickElapsed = tickElapsed + arg1
-      if tickElapsed >= 1 then
-        tickElapsed = 0
-        if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.alt then
-          LeafVE.UI:RefreshAltPanel()
-        end
-      end
-    end)
-    if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.alt then
-      LeafVE.UI:RefreshAltPanel()
-    end
-  end)
-  panel:SetScript("OnHide", function()
-    panel:SetScript("OnUpdate", nil)
-  end)
-end
-
-
 local function BuildLeaderboardPanel(panel, isWeekly)
   -- Block header background
   local headerBG = panel:CreateTexture(nil, "BACKGROUND")
@@ -6388,6 +5521,17 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     memberSet[lowerName] = info
   end
 
+  -- Pre-build alt→mains lookup to avoid O(n²) nested loops below
+  local altsByMain = {}
+  for _, altInfo in pairs(memberSet) do
+    local altMain = GetMainForPlayer(altInfo.name)
+    if altMain then
+      local mainLower = Lower(altMain)
+      if not altsByMain[mainLower] then altsByMain[mainLower] = {} end
+      table.insert(altsByMain[mainLower], altInfo)
+    end
+  end
+
   if isWeekly then
     -- Use the higher of local aggregation and synced weekly data so that stale
     -- synced broadcasts never hide points that are accurately recorded locally.
@@ -6397,8 +5541,8 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     
     for _, guildInfo in pairs(memberSet) do
       local name = guildInfo.name
-      -- Feature C: linked alts never appear on the leaderboard
-      if not LVL_IsAltByName(name) then
+      -- Skip alts: they will be pooled onto the main's entry
+      if not GetMainForPlayer(name) then
         local pts
         local localPts = localWeek[name]
         local syncedPts = syncedWeek and syncedWeek[name]
@@ -6414,6 +5558,25 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
         local totL = pts.L or 0
         local totG = pts.G or 0
         local totS = pts.S or 0
+        -- Add alt points for any alt that maps to this main
+        for _, altInfo in pairs(altsByMain[Lower(name)] or {}) do
+          local altName = altInfo.name
+          local altLocalPts = localWeek[altName]
+          local altSyncedPts = syncedWeek and syncedWeek[altName]
+          local altPts
+          if altLocalPts and altSyncedPts then
+            local alocTotal = (altLocalPts.L or 0) + (altLocalPts.G or 0) + (altLocalPts.S or 0)
+            local asncTotal = (altSyncedPts.L or 0) + (altSyncedPts.G or 0) + (altSyncedPts.S or 0)
+            altPts = alocTotal >= asncTotal and altLocalPts or altSyncedPts
+          elseif altLocalPts then
+            altPts = altLocalPts
+          else
+            altPts = altSyncedPts or {L = 0, G = 0, S = 0}
+          end
+          -- Do NOT pool L (Login) points from alts; only G and S pool
+          totG = totG + (altPts.G or 0)
+          totS = totS + (altPts.S or 0)
+        end
         local total = totL + totG + totS
         table.insert(leaders, {
           name = name, total = total,
@@ -6425,8 +5588,8 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
   else
     for _, guildInfo in pairs(memberSet) do
       local name = guildInfo.name
-      -- Feature C: linked alts never appear on the leaderboard
-      if not LVL_IsAltByName(name) then
+      -- Skip alts: they will be pooled onto the main's entry
+      if not GetMainForPlayer(name) then
         local pts
         local localPts = LeafVE_DB.alltime[name]
         local syncedPts = LeafVE_DB.lboard.alltime[name]
@@ -6442,6 +5605,25 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
         local totL = pts.L or 0
         local totG = pts.G or 0
         local totS = pts.S or 0
+        -- Add alt points for any alt that maps to this main
+        for _, altInfo in pairs(altsByMain[Lower(name)] or {}) do
+          local altName = altInfo.name
+          local altLocalPts = LeafVE_DB.alltime[altName]
+          local altSyncedPts = LeafVE_DB.lboard.alltime[altName]
+          local altPts
+          if altLocalPts and altSyncedPts then
+            local alocTotal = (altLocalPts.L or 0) + (altLocalPts.G or 0) + (altLocalPts.S or 0)
+            local asncTotal = (altSyncedPts.L or 0) + (altSyncedPts.G or 0) + (altSyncedPts.S or 0)
+            altPts = alocTotal >= asncTotal and altLocalPts or altSyncedPts
+          elseif altLocalPts then
+            altPts = altLocalPts
+          else
+            altPts = altSyncedPts or {L = 0, G = 0, S = 0}
+          end
+          -- Do NOT pool L (Login) points from alts; only G and S pool
+          totG = totG + (altPts.G or 0)
+          totS = totS + (altPts.S or 0)
+        end
         local total = totL + totG + totS
         table.insert(leaders, {
           name = name, total = total,
@@ -6451,7 +5633,6 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
       end
     end
   end
-
   
   table.sort(leaders, function(a, b)
     if a.total == b.total then
@@ -6845,6 +6026,96 @@ end)
   
   self.panels.roster.scrollFrame:SetVerticalScroll(0)
   self.panels.roster.scrollBar:SetValue(0)
+end
+
+local function BuildLiveHistoryPanel(panel)
+  -- Block header background
+  local headerBG = panel:CreateTexture(nil, "BACKGROUND")
+  headerBG:SetPoint("TOP", panel, "TOP", -15, -10)
+  headerBG:SetWidth(420)
+  headerBG:SetHeight(50)
+  headerBG:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  headerBG:SetVertexColor(0.15, 0.15, 0.18, 0.9)
+
+  local accentTop = panel:CreateTexture(nil, "BORDER")
+  accentTop:SetPoint("TOPLEFT", headerBG, "TOPLEFT", 0, 0)
+  accentTop:SetPoint("TOPRIGHT", headerBG, "TOPRIGHT", 0, 0)
+  accentTop:SetHeight(3)
+  accentTop:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  accentTop:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 1)
+
+  local h = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  h:SetPoint("TOP", headerBG, "TOP", 0, -10)
+  h:SetText("|cFFFFD700Guild Point History|r")
+
+  local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  subtitle:SetPoint("TOP", h, "BOTTOM", 0, -3)
+  subtitle:SetText("|cFF888888Live feed of all guild member point transactions|r")
+
+  local scrollFrame = CreateFrame("ScrollFrame", nil, panel)
+  scrollFrame:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, -75)
+  scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -30, 12)
+  scrollFrame:EnableMouse(true)
+  scrollFrame:EnableMouseWheel(true)
+
+  local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+  scrollChild:SetWidth(500)
+  scrollChild:SetHeight(1)
+  scrollFrame:SetScrollChild(scrollChild)
+
+  scrollFrame:SetScript("OnMouseWheel", function()
+    local current = scrollFrame:GetVerticalScroll()
+    local maxScroll = scrollFrame:GetVerticalScrollRange()
+    local newScroll = current - (arg1 * 40)
+    if newScroll < 0 then newScroll = 0 end
+    if newScroll > maxScroll then newScroll = maxScroll end
+    scrollFrame:SetVerticalScroll(newScroll)
+  end)
+
+  local scrollBar = CreateFrame("Slider", nil, panel)
+  scrollBar:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -8, -75)
+  scrollBar:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, 12)
+  scrollBar:SetWidth(16)
+  scrollBar:SetOrientation("VERTICAL")
+  scrollBar:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+  scrollBar:SetMinMaxValues(0, 100)
+  scrollBar:SetValue(0)
+
+  local thumb = scrollBar:GetThumbTexture()
+  thumb:SetWidth(16)
+  thumb:SetHeight(24)
+
+  scrollBar:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = {left = 2, right = 2, top = 2, bottom = 2}
+  })
+  scrollBar:SetBackdropColor(0, 0, 0, 0.3)
+  scrollBar:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.8)
+
+  scrollBar:SetScript("OnValueChanged", function()
+    local value = scrollBar:GetValue()
+    local maxScroll = scrollFrame:GetVerticalScrollRange()
+    if maxScroll > 0 then
+      scrollFrame:SetVerticalScroll((value / 100) * maxScroll)
+    end
+  end)
+
+  scrollFrame:SetScript("OnVerticalScroll", function()
+    local maxScroll = scrollFrame:GetVerticalScrollRange()
+    if maxScroll > 0 then
+      local current = scrollFrame:GetVerticalScroll()
+      scrollBar:SetValue((current / maxScroll) * 100)
+    else
+      scrollBar:SetValue(0)
+    end
+  end)
+
+  panel.scrollFrame = scrollFrame
+  panel.scrollChild = scrollChild
+  panel.scrollBar = scrollBar
+  panel.historyEntries = {}
 end
 
 local function BuildHistoryPanel(panel)
@@ -7436,45 +6707,15 @@ local function BuildAdminPanel(panel)
   yBase = yBase - 90
 
   local function BuildStandingsLines()
-    -- Use the same data sources as the My Stats "Current Weekly Standings" section:
-    -- merge local daily aggregation with synced weekly leaderboard data and pick
-    -- the higher total for each player so the announcement is always accurate.
-    local wk = WeekKey()
-    local localWeek = AggForThisWeek()
-    local syncedWeek = LeafVE_DB.lboard.weekly[wk]
-    local memberSet = {}
-    if LeafVE_DB.persistentRoster then
-      for _, info in pairs(LeafVE_DB.persistentRoster) do
-        memberSet[Lower(info.name)] = info
-      end
-    end
-    for lowerName, info in pairs(LeafVE.guildRosterCache) do
-      memberSet[lowerName] = info
-    end
+    local weekAgg = AggForThisWeek()
     local sorted = {}
-    for _, guildInfo in pairs(memberSet) do
-      local name = guildInfo.name
-      local localPts = localWeek[name]
-      local syncedPts = syncedWeek and syncedWeek[name]
-      local pts
-      if localPts and syncedPts then
-        local lTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-        local sTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-        pts = lTotal >= sTotal and localPts or syncedPts
-      elseif localPts then
-        pts = localPts
-      else
-        pts = syncedPts or {L = 0, G = 0, S = 0}
-      end
+    for name, pts in pairs(weekAgg) do
       local total = (pts.L or 0) + (pts.G or 0) + (pts.S or 0)
       if total > 0 then
         table.insert(sorted, {name = name, total = total})
       end
     end
-    table.sort(sorted, function(a, b)
-      if a.total == b.total then return Lower(a.name) < Lower(b.name) end
-      return a.total > b.total
-    end)
+    table.sort(sorted, function(a, b) return a.total > b.total end)
     local rewards = {SEASON_REWARD_1, SEASON_REWARD_2, SEASON_REWARD_3, SEASON_REWARD_4, SEASON_REWARD_5}
     local lines = {"|cFF2DD35CLeaf Village Weekly Standings|r"}
     local ordinals = {"1st", "2nd", "3rd", "4th", "5th"}
@@ -7511,7 +6752,7 @@ local function BuildAdminPanel(panel)
     local lines = BuildStandingsLines()
     if InGuild() then
       for _, line in ipairs(lines) do
-        SendChatMessage(StripColorCodes(line), "GUILD")
+        SendChatMessage(line, "GUILD")
       end
       Print("Weekly standings announced to guild!")
     else
@@ -7530,17 +6771,8 @@ local function BuildAdminPanel(panel)
   checkVerBtn:SetScript("OnClick", function()
     -- Reset response table and send request
     LeafVE.versionResponses = {}
-    LeafVE.shownVersionNag = nil
-    LeafVE.warnedOldVersion = {}
-    LeafVE.adminVersionCheckActive = true
     LeafVE.versionCheckTime = Now()
     SendAddonMessage("LeafVE", "VERSIONREQ", "GUILD")
-    -- Clear the admin flag after responses have been collected so passive
-    -- VERSIONRSP messages that arrive later do not trigger chat spam.
-    -- 10 seconds gives guild members enough time to respond to the request.
-    C_Timer_After(10, function()
-      LeafVE.adminVersionCheckActive = false
-    end)
     -- Open the version results popup after a short delay
     C_Timer_After(5, function()
       LeafVE:ShowVersionResults()
@@ -7648,14 +6880,10 @@ local function BuildAdminPanel(panel)
       confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
       confirmBtn:SetText("Confirm Reset")
       confirmBtn:SetScript("OnClick", function()
-        local ts = time()
-        EnsureDB()
-        LeafVE_GlobalDB.lastAdminResetTS = ts
-        -- Use LVL_AdminResetAll for the new guild-wide wipe (Feature E)
-        LVL_AdminResetAll()
+        LeafVE:HardResetLeafPoints_Local()
         if InGuild() then
-          SendAddonMessage("LeafVE", "LVE_ADMIN_RESET_LEAF_ALL:"..ts, "GUILD")
-          SendAddonMessage("LeafVE", "LVE_RESET_LBOARD_ZERO:"..ts, "GUILD")
+          SendAddonMessage("LeafVE", "LVE_ADMIN_RESET_LEAF_ALL:"..time(), "GUILD")
+          SendAddonMessage("LeafVE", "LVE_RESET_LBOARD_ZERO:"..time(), "GUILD")
           LeafVE:BroadcastLeaderboardData()
         end
         Print("|cFFFF4444Broadcast: All Leaf Points reset for all guild members.|r")
@@ -7739,6 +6967,431 @@ local function BuildAdminPanel(panel)
   -- Set the scroll child height and update scrollbar range
   subFrame:SetHeight(math.abs(yBase) + 50)
   UpdateAdminScroll()
+end
+
+local function BuildAltsPanel(panel)
+  local headerBG = panel:CreateTexture(nil, "BACKGROUND")
+  headerBG:SetPoint("TOP", panel, "TOP", -15, -10)
+  headerBG:SetWidth(420)
+  headerBG:SetHeight(50)
+  headerBG:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  headerBG:SetVertexColor(0.15, 0.15, 0.18, 0.9)
+
+  local accentTop = panel:CreateTexture(nil, "BORDER")
+  accentTop:SetPoint("TOPLEFT", headerBG, "TOPLEFT", 0, 0)
+  accentTop:SetPoint("TOPRIGHT", headerBG, "TOPRIGHT", 0, 0)
+  accentTop:SetHeight(3)
+  accentTop:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  accentTop:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1)
+
+  local h = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  h:SetPoint("TOP", headerBG, "TOP", 0, -10)
+  h:SetText("|cFFFFD700Characters & Alts|r")
+
+  local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  subtitle:SetPoint("TOP", h, "BOTTOM", 0, -3)
+  subtitle:SetText("|cFF888888Pool Leaf Points across all your characters|r")
+
+  -- Scrollable content area
+  local scrollFrame = CreateFrame("ScrollFrame", nil, panel)
+  scrollFrame:SetPoint("TOPLEFT",     panel, "TOPLEFT",      0, -68)
+  scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -20, 10)
+  scrollFrame:EnableMouseWheel(true)
+
+  local scrollBar
+  scrollFrame:SetScript("OnMouseWheel", function()
+    local cur = scrollFrame:GetVerticalScroll()
+    local max = scrollFrame:GetVerticalScrollRange()
+    local new = cur - (arg1 * 30)
+    if new < 0 then new = 0 end
+    if new > max then new = max end
+    scrollFrame:SetVerticalScroll(new)
+    scrollBar:SetValue(new)
+  end)
+
+  scrollBar = CreateFrame("Slider", nil, panel)
+  scrollBar:SetPoint("TOPRIGHT",    panel, "TOPRIGHT",    -4, -68)
+  scrollBar:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 10)
+  scrollBar:SetWidth(14)
+  scrollBar:SetOrientation("VERTICAL")
+  scrollBar:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+  scrollBar:SetMinMaxValues(0, 1)
+  scrollBar:SetValue(0)
+  scrollBar:SetScript("OnValueChanged", function()
+    scrollFrame:SetVerticalScroll(this:GetValue())
+  end)
+
+  local subFrame = CreateFrame("Frame", nil, scrollFrame)
+  subFrame:SetWidth(440)
+  subFrame:SetHeight(1)
+  scrollFrame:SetScrollChild(subFrame)
+
+  local yBase = -10
+
+  -- Section: How it works
+  local infoLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  infoLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  infoLabel:SetText("|cFF2DD35CHow It Works|r")
+  yBase = yBase - 22
+
+  local infoLines = {
+    "Link alts to a main character to pool Gameplay (G) and Social (S)",
+    "points together. Login (L) points are tracked per character.",
+    "Daily login and shoutout caps are shared across linked characters.",
+    "Use |cFFFFD700/lve setleaderchar Name|r to choose which name shows on",
+    "the leaderboard.",
+  }
+  for _, line in ipairs(infoLines) do
+    local lbl = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    lbl:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+    lbl:SetWidth(400)
+    lbl:SetJustifyH("LEFT")
+    lbl:SetText(line)
+    lbl:SetTextColor(0.75, 0.75, 0.75)
+    yBase = yBase - 18
+  end
+  yBase = yBase - 6
+
+  -- Section: Current Status
+  local div1 = subFrame:CreateTexture(nil, "ARTWORK")
+  div1:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  div1:SetWidth(420)
+  div1:SetHeight(1)
+  div1:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  div1:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
+  yBase = yBase - 14
+
+  local statusLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  statusLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  statusLabel:SetText("|cFF2DD35CCurrent Character Status|r")
+  yBase = yBase - 22
+
+  local currentCharLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  currentCharLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  currentCharLabel:SetWidth(400)
+  currentCharLabel:SetJustifyH("LEFT")
+  currentCharLabel:SetText("Loading...")
+  panel.altsCurrentCharLabel = currentCharLabel
+  yBase = yBase - 18
+
+  local linkedToLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  linkedToLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  linkedToLabel:SetWidth(400)
+  linkedToLabel:SetJustifyH("LEFT")
+  linkedToLabel:SetText("")
+  panel.altsLinkedToLabel = linkedToLabel
+  yBase = yBase - 18
+
+  local leaderCharLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  leaderCharLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  leaderCharLabel:SetWidth(400)
+  leaderCharLabel:SetJustifyH("LEFT")
+  leaderCharLabel:SetText("")
+  panel.altsLeaderCharLabel = leaderCharLabel
+  yBase = yBase - 26
+
+  -- Section: Link / Unlink controls
+  local div2 = subFrame:CreateTexture(nil, "ARTWORK")
+  div2:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  div2:SetWidth(420)
+  div2:SetHeight(1)
+  div2:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  div2:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
+  yBase = yBase - 14
+
+  local ctrlLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  ctrlLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  ctrlLabel:SetText("|cFF2DD35CLink to Main Character|r")
+  yBase = yBase - 26
+
+  -- EditBox: main name input
+  local inputBG = CreateFrame("Frame", nil, subFrame)
+  inputBG:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  inputBG:SetWidth(200)
+  inputBG:SetHeight(24)
+  inputBG:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 10,
+    insets = {left = 3, right = 3, top = 3, bottom = 3}
+  })
+  inputBG:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
+  inputBG:SetBackdropBorderColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 0.6)
+
+  local mainInput = CreateFrame("EditBox", nil, inputBG)
+  mainInput:SetPoint("TOPLEFT", inputBG, "TOPLEFT", 6, -5)
+  mainInput:SetWidth(185)
+  mainInput:SetHeight(16)
+  mainInput:SetAutoFocus(false)
+  mainInput:SetFontObject(GameFontHighlightSmall)
+  mainInput:SetMaxLetters(48)
+  mainInput:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+  local mainInputPlaceholder = inputBG:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  mainInputPlaceholder:SetPoint("TOPLEFT", inputBG, "TOPLEFT", 8, -5)
+  mainInputPlaceholder:SetText("|cFF555555Main character name...|r")
+  panel.altsMainInput = mainInput
+  panel.altsMainInputPlaceholder = mainInputPlaceholder
+  mainInput:SetScript("OnTextChanged", function()
+    if mainInput:GetText() == "" then
+      mainInputPlaceholder:Show()
+    else
+      mainInputPlaceholder:Hide()
+    end
+  end)
+
+  local linkBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  linkBtn:SetWidth(80)
+  linkBtn:SetHeight(24)
+  linkBtn:SetPoint("LEFT", inputBG, "RIGHT", 8, 0)
+  linkBtn:SetText("Link Main")
+  SkinButtonAccent(linkBtn)
+  linkBtn:SetScript("OnClick", function()
+    local mainName = Trim(mainInput:GetText() or "")
+    if mainName == "" then
+      Print("Enter the main character name first.")
+      return
+    end
+    EnsureDB()
+    local me = ShortName(UnitName("player"))
+    if not me then return end
+    if Lower(me) == Lower(mainName) then
+      Print("You cannot link a character to itself.")
+      return
+    end
+    LeafVE_GlobalDB.altLinks[me] = mainName
+    LeafVE_GlobalDB.registeredChars[me] = true
+    mainInput:SetText("")
+    mainInputPlaceholder:Show()
+    if InGuild() then
+      SendAddonMessage("LeafVE", "ALTLINK:"..me..":"..mainName, "GUILD")
+    end
+    Print(string.format("|cFF2DD35C%s|r linked to main |cFFFFD700%s|r.", me, mainName))
+    LeafVE.UI:RefreshAlts()
+  end)
+
+  yBase = yBase - 34
+
+  local unlinkBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  unlinkBtn:SetWidth(110)
+  unlinkBtn:SetHeight(24)
+  unlinkBtn:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  unlinkBtn:SetText("Unlink Main")
+  SkinButtonAccent(unlinkBtn)
+  unlinkBtn:SetScript("OnClick", function()
+    EnsureDB()
+    local me = ShortName(UnitName("player"))
+    if not me then return end
+    if LeafVE_GlobalDB.altLinks[me] then
+      local oldMain = LeafVE_GlobalDB.altLinks[me]
+      LeafVE_GlobalDB.altLinks[me] = nil
+      if InGuild() then
+        SendAddonMessage("LeafVE", "ALTLINK:"..me..":", "GUILD")
+      end
+      Print(string.format("|cFF2DD35C%s|r unlinked from |cFFFFD700%s|r.", me, oldMain))
+    else
+      Print("This character is not linked to any main.")
+    end
+    LeafVE.UI:RefreshAlts()
+  end)
+
+  yBase = yBase - 40
+
+  -- Section: Leaderboard display name
+  local div3 = subFrame:CreateTexture(nil, "ARTWORK")
+  div3:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  div3:SetWidth(420)
+  div3:SetHeight(1)
+  div3:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  div3:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
+  yBase = yBase - 14
+
+  local lbLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  lbLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  lbLabel:SetText("|cFF2DD35CLeaderboard Display Name|r")
+  yBase = yBase - 26
+
+  local lbHint = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  lbHint:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  lbHint:SetWidth(400)
+  lbHint:SetJustifyH("LEFT")
+  lbHint:SetText("|cFF888888Choose which character name appears on the leaderboard.|r")
+  yBase = yBase - 22
+
+  local lbInputBG = CreateFrame("Frame", nil, subFrame)
+  lbInputBG:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+  lbInputBG:SetWidth(200)
+  lbInputBG:SetHeight(24)
+  lbInputBG:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 10,
+    insets = {left = 3, right = 3, top = 3, bottom = 3}
+  })
+  lbInputBG:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
+  lbInputBG:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.6)
+
+  local lbInput = CreateFrame("EditBox", nil, lbInputBG)
+  lbInput:SetPoint("TOPLEFT", lbInputBG, "TOPLEFT", 6, -5)
+  lbInput:SetWidth(185)
+  lbInput:SetHeight(16)
+  lbInput:SetAutoFocus(false)
+  lbInput:SetFontObject(GameFontHighlightSmall)
+  lbInput:SetMaxLetters(48)
+  lbInput:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+  panel.altsLbInput = lbInput
+
+  local lbSetBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  lbSetBtn:SetWidth(90)
+  lbSetBtn:SetHeight(24)
+  lbSetBtn:SetPoint("LEFT", lbInputBG, "RIGHT", 8, 0)
+  lbSetBtn:SetText("Set Name")
+  SkinButtonAccent(lbSetBtn)
+  lbSetBtn:SetScript("OnClick", function()
+    local charName = Trim(lbInput:GetText() or "")
+    if charName == "" then
+      Print("Enter the character name to show on the leaderboard.")
+      return
+    end
+    EnsureDB()
+    LeafVE_GlobalDB.leaderChar = charName
+    Print(string.format("Leaderboard display name set to |cFFFFD700%s|r.", charName))
+    LeafVE.UI:RefreshAlts()
+  end)
+
+  local lbClearBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  lbClearBtn:SetWidth(60)
+  lbClearBtn:SetHeight(24)
+  lbClearBtn:SetPoint("LEFT", lbSetBtn, "RIGHT", 6, 0)
+  lbClearBtn:SetText("Clear")
+  SkinButtonAccent(lbClearBtn)
+  lbClearBtn:SetScript("OnClick", function()
+    EnsureDB()
+    LeafVE_GlobalDB.leaderChar = nil
+    lbInput:SetText("")
+    Print("Leaderboard display name cleared (using effective name).")
+    LeafVE.UI:RefreshAlts()
+  end)
+
+  yBase = yBase - 40
+
+  -- Section: Registered Characters list
+  local div4 = subFrame:CreateTexture(nil, "ARTWORK")
+  div4:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  div4:SetWidth(420)
+  div4:SetHeight(1)
+  div4:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  div4:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
+  yBase = yBase - 14
+
+  local regLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  regLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  regLabel:SetText("|cFF2DD35CRegistered Characters on this Account|r")
+  yBase = yBase - 22
+
+  panel.altsCharListFrame = subFrame
+  panel.altsCharListYBase = yBase
+  panel.altsCharEntries = {}
+
+  local totalHeight = math.abs(yBase) + 200  -- will be updated in Refresh
+  subFrame:SetHeight(totalHeight)
+
+  -- Update scrollbar range
+  local function UpdateScroll()
+    local max = scrollFrame:GetVerticalScrollRange()
+    scrollBar:SetMinMaxValues(0, max > 0 and max or 1)
+  end
+  panel.altsUpdateScroll = UpdateScroll
+end
+
+function LeafVE.UI:RefreshAlts()
+  EnsureDB()
+  if not self.panels or not self.panels.alts then return end
+  local panel = self.panels.alts
+
+  local me = ShortName(UnitName("player"))
+  local effectiveName = GetEffectiveName()
+
+  -- Update current character status
+  if panel.altsCurrentCharLabel then
+    panel.altsCurrentCharLabel:SetText("Current character: |cFFFFD700"..(me or "?").."|r")
+  end
+  if panel.altsLinkedToLabel then
+    if LeafVE_GlobalDB.altLinks and me and LeafVE_GlobalDB.altLinks[me] then
+      panel.altsLinkedToLabel:SetText("Linked main: |cFF2DD35C"..LeafVE_GlobalDB.altLinks[me].."|r  (points pool to main)")
+    else
+      panel.altsLinkedToLabel:SetText("|cFF888888Not linked – this character is standalone.|r")
+    end
+  end
+  if panel.altsLeaderCharLabel then
+    if LeafVE_GlobalDB.leaderChar then
+      panel.altsLeaderCharLabel:SetText("Leaderboard name: |cFFFFD700"..LeafVE_GlobalDB.leaderChar.."|r")
+    else
+      panel.altsLeaderCharLabel:SetText("Leaderboard name: |cFF888888(using effective name: "..(effectiveName or "?")..")|r")
+    end
+  end
+
+  -- Pre-fill leaderboard input with current value
+  if panel.altsLbInput then
+    if LeafVE_GlobalDB.leaderChar then
+      panel.altsLbInput:SetText(LeafVE_GlobalDB.leaderChar)
+    end
+  end
+
+  -- Rebuild character list
+  if not panel.altsCharListFrame then return end
+  local subFrame = panel.altsCharListFrame
+  local yBase = panel.altsCharListYBase
+
+  -- Hide old entries
+  for i = 1, table.getn(panel.altsCharEntries) do
+    panel.altsCharEntries[i]:Hide()
+  end
+
+  -- Build sorted list
+  local chars = {}
+  for charName, _ in pairs(LeafVE_GlobalDB.registeredChars) do
+    table.insert(chars, charName)
+  end
+  table.sort(chars, function(a, b) return Lower(a) < Lower(b) end)
+
+  for i = 1, table.getn(chars) do
+    local charName = chars[i]
+    local entry = panel.altsCharEntries[i]
+    if not entry then
+      entry = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+      entry:SetWidth(400)
+      entry:SetJustifyH("LEFT")
+      table.insert(panel.altsCharEntries, entry)
+    end
+    entry:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
+    local linked = LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[charName]
+    local suffix = ""
+    if linked then
+      suffix = "  |cFF888888→ main: |cFF2DD35C"..linked.."|r"
+    end
+    if me and Lower(charName) == Lower(me) then
+      suffix = suffix.."  |cFF2DD35C◄ current|r"
+    end
+    entry:SetText("|cFFFFD700"..charName.."|r"..suffix)
+    entry:Show()
+    yBase = yBase - 20
+  end
+
+  if table.getn(chars) == 0 then
+    if not panel.altsNoCharsText then
+      panel.altsNoCharsText = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      panel.altsNoCharsText:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, panel.altsCharListYBase)
+      panel.altsNoCharsText:SetWidth(400)
+      panel.altsNoCharsText:SetJustifyH("LEFT")
+      panel.altsNoCharsText:SetText("|cFF888888No characters registered yet. Log in on each alt to register it.|r")
+    end
+    panel.altsNoCharsText:Show()
+  elseif panel.altsNoCharsText then
+    panel.altsNoCharsText:Hide()
+  end
+
+  subFrame:SetHeight(math.abs(yBase) + 20)
+  if panel.altsUpdateScroll then panel.altsUpdateScroll() end
 end
 
 local function BuildJoinPanel(panel)
@@ -7935,6 +7588,9 @@ local function BuildWelcomePanel(panel)
   AddLine("|cFF00CCFF/lboardreq|r              - Request leaderboard sync")
   AddLine("|cFF00CCFF/badgesync|r              - Broadcast your badges")
   AddLine("|cFF00CCFF/lvedebug points|r        - Show your current points")
+  AddLine("|cFF00CCFF/lve linkmain Name|r      - Link this alt to a main")
+  AddLine("|cFF00CCFF/lve unlinkmain|r         - Remove main link")
+  AddLine("|cFF00CCFF/lve listchars|r          - List registered characters")
   yOffset = yOffset - 6
   AddDivider()
 
@@ -8126,78 +7782,6 @@ function LeafVE.UI:RefreshHistory()
   panel.scrollBar:SetValue(0)
 end
 
--------------------------------------------------
--- ALT PANEL REFRESH (FEATURE A)
--------------------------------------------------
-
-function LeafVE.UI:RefreshAltPanel()
-  if not self.panels or not self.panels.alt then return end
-  local p = self.panels.alt
-  EnsureDB()
-  local myKey = LVL_GetCharKey()
-  local isLinked = LVL_IsAltLinked(myKey)
-
-  -- Update status text
-  if p.altStatusText then
-    if isLinked then
-      p.altStatusText:SetText("|cFF00FF00Linked to: " .. LVL_GetMainKey(myKey) .. "|r")
-    else
-      local pending = LeafVE_DB.pendingMerge and LeafVE_DB.pendingMerge[myKey]
-      if pending then
-        p.altStatusText:SetText("|cFFFFAA00Pending approval: " .. (pending.main or "?") .. "|r")
-      else
-        p.altStatusText:SetText("|cFFAAAAAA Not linked|r")
-      end
-    end
-  end
-
-  -- Show/hide input box
-  if p.altMainInput then
-    if isLinked then
-      p.altMainInput:Hide()
-      if p.altInputLabel then p.altInputLabel:Hide() end
-    else
-      p.altMainInput:Show()
-      if p.altInputLabel then p.altInputLabel:Show() end
-    end
-  end
-
-  -- Update link/unlink button text
-  if p.altLinkBtn then
-    p.altLinkBtn:SetText(isLinked and "Unlink" or "Link Points")
-  end
-
-  -- Show/hide deposit button
-  if p.altDepositBtn then
-    if isLinked then
-      p.altDepositBtn:Show()
-    else
-      p.altDepositBtn:Hide()
-    end
-  end
-
-  -- Update cooldown text
-  if p.altCooldownText then
-    local lc = LeafVE_DB.lastLinkChange and LeafVE_DB.lastLinkChange[myKey]
-    local ld = LeafVE_DB.lastDeposit and LeafVE_DB.lastDeposit[myKey]
-    local linkRemain = LVL_Remain(lc, SECONDS_PER_DAY)
-    local depositRemain = LVL_Remain(ld, SECONDS_PER_DAY)
-    local parts = {}
-    if linkRemain > 0 then
-      table.insert(parts, (isLinked and "Unlink: " or "Link: ") .. LVL_FormatTime(linkRemain))
-    end
-    if isLinked and depositRemain > 0 then
-      table.insert(parts, "Deposit: " .. LVL_FormatTime(depositRemain))
-    end
-    if table.getn(parts) > 0 then
-      p.altCooldownText:SetText("|cFFAAAAAA" .. table.concat(parts, " | ") .. "|r")
-    else
-      p.altCooldownText:SetText("")
-    end
-  end
-end
-
-
 function LeafVE.UI:RefreshShoutoutsPanel()
   if not self.panels or not self.panels.shoutouts then return end
   local panel = self.panels.shoutouts
@@ -8312,9 +7896,7 @@ function LeafVE.UI:RefreshBadges()
   local me = ShortName(UnitName("player"))
   EnsureDB()
 
-  -- When a player card is open for someone else, show that player's badges
-  local viewTarget = (self.cardCurrentPlayer and self.cardCurrentPlayer ~= "") and self.cardCurrentPlayer or me
-  local myBadges = LeafVE_DB.badges[viewTarget] or {}
+  local myBadges = LeafVE_DB.badges[me] or {}
 
   -- Safety check: ensure badgeFrames exists
   if not panel.badgeFrames then
@@ -8457,7 +8039,7 @@ function LeafVE.UI:RefreshBadges()
       frame.badgeQuality = badge.quality
       frame.earnedAt = badge.earnedAt
       frame.badgeId = badge.id
-      frame.badgePlayerName = viewTarget
+      frame.badgePlayerName = me
       
       -- TOOLTIP
       frame:SetScript("OnEnter", function()
@@ -8823,12 +8405,8 @@ function LeafVE.UI:Build()
   self.tabMe:SetPoint("LEFT", self.tabWelcome, "RIGHT", 4, 0)
   self.tabMe:SetWidth(70)
 
-  self.tabShout = TabButton(f, "Shout", "LeafVE_TabShout")
-  self.tabShout:SetPoint("LEFT", self.tabMe, "RIGHT", 4, 0)
-  self.tabShout:SetWidth(55)
-
   self.tabRoster = TabButton(f, "Roster", "LeafVE_TabRoster")
-  self.tabRoster:SetPoint("LEFT", self.tabShout, "RIGHT", 4, 0)
+  self.tabRoster:SetPoint("LEFT", self.tabMe, "RIGHT", 4, 0)
   self.tabRoster:SetWidth(60)
 
   self.tabLeaderWeek = TabButton(f, "Weekly", "LeafVE_TabLeaderWeek")
@@ -8847,12 +8425,20 @@ function LeafVE.UI:Build()
   self.tabBadges:SetPoint("LEFT", self.tabAchievements, "RIGHT", 4, 0)
   self.tabBadges:SetWidth(65)
 
+  self.tabAlts = TabButton(f, "Alts", "LeafVE_TabAlts")
+  self.tabAlts:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
+  self.tabAlts:SetWidth(40)
+
   self.tabHistory = TabButton(f, "History", "LeafVE_TabHistory")
-  self.tabHistory:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
+  self.tabHistory:SetPoint("LEFT", self.tabAlts, "RIGHT", 4, 0)
   self.tabHistory:SetWidth(60)
 
+  self.tabLiveHistory = TabButton(f, "Live History", "LeafVE_TabLiveHistory")
+  self.tabLiveHistory:SetPoint("LEFT", self.tabHistory, "RIGHT", 4, 0)
+  self.tabLiveHistory:SetWidth(80)
+
   self.tabOptions = TabButton(f, "Options", "LeafVE_TabOptions")
-  self.tabOptions:SetPoint("LEFT", self.tabHistory, "RIGHT", 4, 0)
+  self.tabOptions:SetPoint("LEFT", self.tabLiveHistory, "RIGHT", 4, 0)
   self.tabOptions:SetWidth(60)
 
   self.tabAdmin = TabButton(f, "Admin", "LeafVE_TabAdmin")
@@ -8864,10 +8450,6 @@ function LeafVE.UI:Build()
   else
     self.tabAdmin:Hide()
   end
-
-  self.tabAlt = TabButton(f, "Alts", "LeafVE_TabAlt")
-  self.tabAlt:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
-  self.tabAlt:SetWidth(45)
   
   self.inset = CreateInset(f)
   self.inset:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -80)
@@ -8924,9 +8506,13 @@ function LeafVE.UI:Build()
   self.panels.admin:SetAllPoints(self.left)
   BuildAdminPanel(self.panels.admin)
 
-  self.panels.alt = CreateFrame("Frame", nil, self.left)
-  self.panels.alt:SetAllPoints(self.left)
-  BuildAltPanel(self.panels.alt)
+  self.panels.alts = CreateFrame("Frame", nil, self.left)
+  self.panels.alts:SetAllPoints(self.left)
+  BuildAltsPanel(self.panels.alts)
+
+  self.panels.liveHistory = CreateFrame("Frame", nil, self.left)
+  self.panels.liveHistory:SetAllPoints(self.left)
+  BuildLiveHistoryPanel(self.panels.liveHistory)
 
   self.panels.welcome = CreateFrame("Frame", nil, self.left)
   self.panels.welcome:SetAllPoints(self.left)
@@ -8939,11 +8525,6 @@ function LeafVE.UI:Build()
   -- Tab click handlers
   self.tabMe:SetScript("OnClick", function()
     self.activeTab = "me"
-    self:Refresh()
-  end)
-
-  self.tabShout:SetScript("OnClick", function()
-    self.activeTab = "shoutouts"
     self:Refresh()
   end)
   
@@ -8987,8 +8568,13 @@ function LeafVE.UI:Build()
     self:Refresh()
   end)
 
-  self.tabAlt:SetScript("OnClick", function()
-    self.activeTab = "alt"
+  self.tabAlts:SetScript("OnClick", function()
+    self.activeTab = "alts"
+    self:Refresh()
+  end)
+
+  self.tabLiveHistory:SetScript("OnClick", function()
+    self.activeTab = "liveHistory"
     self:Refresh()
   end)
 
@@ -9014,9 +8600,10 @@ function LeafVE.UI:Build()
   self.panels.achievements:Hide()
   self.panels.options:Hide()
   self.panels.admin:Hide()
+  self.panels.alts:Hide()
+  self.panels.liveHistory:Hide()
   self.panels.welcome:Hide()
   self.panels.join:Hide()
-  self.panels.alt:Hide()
   
   self.panels.me:Show()
   
@@ -9049,7 +8636,7 @@ function LeafVE.UI:Refresh()
     self.activeTab = "me"
   end
 
-  local accessTabs = {self.tabWelcome, self.tabMe, self.tabShout, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabHistory, self.tabOptions, self.tabAlt}
+  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabAlts, self.tabHistory, self.tabLiveHistory, self.tabOptions}
   if hasAccess then
     for _, tab in ipairs(accessTabs) do
       if tab then tab:Show() end
@@ -9089,7 +8676,7 @@ function LeafVE.UI:Refresh()
   end
   
   -- Hide all panels safely
-  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "welcome", "join", "alt"}
+  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "alts", "liveHistory", "welcome", "join"}
   for _, name in ipairs(panelNames) do
     if self.panels[name] and self.panels[name].Hide then
       self.panels[name]:Hide()
@@ -9304,6 +8891,7 @@ function LeafVE.UI:Refresh()
         end
       end
     end
+
   elseif self.activeTab == "shoutouts" and self.panels.shoutouts then
     self.panels.shoutouts:Show()
     local me = ShortName(UnitName("player"))
@@ -9364,14 +8952,117 @@ function LeafVE.UI:Refresh()
       if self.panels.me then self.panels.me:Show() end
     end
 
+  elseif self.activeTab == "alts" and self.panels.alts then
+    self.panels.alts:Show()
+    self:RefreshAlts()
+
+  elseif self.activeTab == "liveHistory" and self.panels.liveHistory then
+    self.panels.liveHistory:Show()
+    self:RefreshLiveHistory()
+
   elseif self.activeTab == "welcome" and self.panels.welcome then
     self.panels.welcome:Show()
     self:RefreshWelcome()
-
-  elseif self.activeTab == "alt" and self.panels.alt then
-    self.panels.alt:Show()
-    -- RefreshAltPanel is called by the OnShow script of the alt panel
   end
+end
+
+function LeafVE.UI:RefreshLiveHistory()
+  EnsureDB()
+  local p = self.panels.liveHistory
+  if not p then return end
+  local scrollChild = p.scrollChild
+  if not scrollChild then return end
+
+  -- Collect all entries from all players, merged
+  local allEntries = {}
+  for pName, entries in pairs(LeafVE_DB.pointHistory) do
+    if type(entries) == "table" then
+      for _, entry in ipairs(entries) do
+        local merged = {}
+        merged.playerName = pName
+        merged.timestamp = entry.timestamp or 0
+        merged.amount = entry.amount or 0
+        merged.reason = entry.reason or ""
+        merged.dateStr = entry.dateStr or ""
+        table.insert(allEntries, merged)
+      end
+    end
+  end
+
+  -- Sort by timestamp descending (newest first)
+  table.sort(allEntries, function(a, b) return a.timestamp > b.timestamp end)
+
+  -- Cap at 500 entries
+  local maxEntries = 500
+  local count = table.getn(allEntries)
+  if count > maxEntries then count = maxEntries end
+
+  -- Clear existing rows
+  if p.historyEntries then
+    for _, row in ipairs(p.historyEntries) do
+      row:Hide()
+    end
+  end
+  p.historyEntries = {}
+
+  local rowH = 18
+  local yOff = -4
+  local totalHeight = 0
+  local altRow = false
+
+  for i = 1, count do
+    local entry = allEntries[i]
+    local row = CreateFrame("Frame", nil, scrollChild)
+    row:SetWidth(scrollChild:GetWidth() or 500)
+    row:SetHeight(rowH)
+    row:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 0, yOff)
+
+    -- Alternating row background
+    altRow = not altRow
+    if altRow then
+      local bg = row:CreateTexture(nil, "BACKGROUND")
+      bg:SetAllPoints(row)
+      bg:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+      bg:SetVertexColor(0.1, 0.1, 0.12, 0.5)
+    end
+
+    -- Date/time
+    local dateFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    dateFS:SetPoint("LEFT", row, "LEFT", 4, 0)
+    dateFS:SetWidth(90)
+    dateFS:SetJustifyH("LEFT")
+    dateFS:SetText("|cFF888888"..(entry.dateStr or "").."  |r")
+
+    -- Player name
+    local nameFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    nameFS:SetPoint("LEFT", row, "LEFT", 98, 0)
+    nameFS:SetWidth(80)
+    nameFS:SetJustifyH("LEFT")
+    nameFS:SetText("|cFF00CCFF"..(entry.playerName or "").."  |r")
+
+    -- Amount
+    local amtFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    amtFS:SetPoint("LEFT", row, "LEFT", 182, 0)
+    amtFS:SetWidth(55)
+    amtFS:SetJustifyH("LEFT")
+    local amtColor = (entry.amount and entry.amount > 0) and "|cFF2DD35C" or "|cFFFF4444"
+    amtFS:SetText(amtColor.."+"..tostring(entry.amount or 0).." LP|r")
+
+    -- Reason
+    local reasonFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    reasonFS:SetPoint("LEFT", row, "LEFT", 240, 0)
+    reasonFS:SetWidth(230)
+    reasonFS:SetJustifyH("LEFT")
+    reasonFS:SetText(entry.reason or "")
+
+    table.insert(p.historyEntries, row)
+    yOff = yOff - rowH
+    totalHeight = totalHeight + rowH
+  end
+
+  scrollChild:SetHeight(math.max(totalHeight + 8, 1))
+  p.scrollFrame:SetVerticalScroll(0)
+  if p.scrollBar then p.scrollBar:SetValue(0) end
 end
 
 function LeafVE.UI:RefreshWelcome()
@@ -9460,9 +9151,6 @@ ef:RegisterEvent("CHAT_MSG_GUILD")
 ef:RegisterEvent("CHAT_MSG_WHISPER")
 ef:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
 ef:RegisterEvent("UNIT_INVENTORY_CHANGED")
-ef:RegisterEvent("CHARACTER_POINTS_CHANGED")
-ef:RegisterEvent("PLAYER_AURAS_CHANGED")
-ef:RegisterEvent("CHAT_MSG_SKILL")
 
 local groupCheckTimer = 0
 local notificationTimer = 0
@@ -9478,7 +9166,6 @@ ef:SetScript("OnEvent", function()
     if RegisterAddonMessagePrefix then
       RegisterAddonMessagePrefix("LeafVE")
       RegisterAddonMessagePrefix("LeafVEAch")
-      RegisterAddonMessagePrefix("LVL")
       Print("Registered addon message prefixes")
     else
       Print("Warning: RegisterAddonMessagePrefix not available!")
@@ -9491,14 +9178,13 @@ ef:SetScript("OnEvent", function()
   
   if event == "PLAYER_LOGIN" then
     Print("Loaded v"..LeafVE.version)
+    Print("Auto-tracking: Login & Group points enabled!")
     EnsureDB()
     LeafVE:RecordActivity()
-    -- Initialise BCS scan dirty flags so stats are computed on first tab open
-    if BCS then
-      BCS.needScanGear     = true
-      BCS.needScanTalents  = true
-      BCS.needScanAuras    = true
-      BCS.needScanSkills   = true
+    -- Register this character in the account-wide roster
+    local me = ShortName(UnitName("player"))
+    if me then
+      LeafVE_GlobalDB.registeredChars[me] = true
     end
     -- One-time migration: purge old "Quest area trigger" history entries
     if not LeafVE_DB.migratedTriggerHistory then
@@ -9518,13 +9204,6 @@ ef:SetScript("OnEvent", function()
       end
       LeafVE_DB.migratedTriggerHistory = true
     end
-    -- One-time migration: wipe old shoutout data and migrate to V2
-    if not LeafVE_DB.shoutouts_v2_migrated then
-      LeafVE_DB.shoutouts = {}
-      LeafVE_DB.shoutouts_v2_migrated = true
-    end
-    -- Check guild info bulletin for a pending guild-wide wipe (Feature E: offline catch-up)
-    LVL_CheckGuildWipeBulletin()
     LeafVE:CheckDailyLogin()
     LeafVE:PurgeStaleWeeklyData()
     -- Seed the quest log cache so we can diff on the first QUEST_LOG_UPDATE
@@ -9544,19 +9223,19 @@ ef:SetScript("OnEvent", function()
           LeafVE.versionResponses = {}
           SendAddonMessage("LeafVE", "VERSIONREQ", "GUILD")
           LeafVE:BroadcastBadges()
-          LeafVE:BroadcastBadgeProgress()
           LeafVE:BroadcastLeaderboardData()
           
           local bme = ShortName(UnitName("player"))
           if bme and LeafVE_GlobalDB.playerNotes and LeafVE_GlobalDB.playerNotes[bme] then
             LeafVE:BroadcastPlayerNote(LeafVE_GlobalDB.playerNotes[bme])
           end
+          -- Broadcast our alt link so guildies can merge leaderboard entries
+          if bme and LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[bme] then
+            SendAddonMessage("LeafVE", "ALTLINK:"..bme..":"..LeafVE_GlobalDB.altLinks[bme], "GUILD")
+          end
           -- Broadcast gear so guildmates can cache it
           LeafVE.lastGearBroadcast = 0  -- bypass throttle for login broadcast
           LeafVE:BroadcastMyGear()
-          -- Broadcast BCS stats so guildmates can display them
-          LeafVE.lastStatsBroadcast = 0  -- bypass throttle for login broadcast
-          LeafVE:BroadcastMyStats()
         end
         broadcastFrame:SetScript("OnUpdate", nil)
       end
@@ -9573,8 +9252,6 @@ ef:SetScript("OnEvent", function()
     -- Invalidate the roster cache so the next GetGroupGuildies() call rebuilds it
     -- from the fresh server data (without triggering another GuildRoster() request).
     LeafVE.guildRosterCacheTime = 0
-    -- Check guild bulletin for pending wipe (Feature E: offline catch-up on roster update)
-    LVL_CheckGuildWipeBulletin()
     return
   end
 
@@ -9633,28 +9310,7 @@ ef:SetScript("OnEvent", function()
   if event == "UNIT_INVENTORY_CHANGED" then
     if arg1 == "player" then
       LeafVE:BroadcastMyGear()
-      -- Debounce BCS gear scan (200 ms, same as standalone BCS addon)
-      if BCS then
-        LeafVE.bcsInventoryDebounceTimer   = 0.2
-        LeafVE.bcsInventoryDebouncePending = true
-        LeafVE.statsBroadcastPending       = true
-      end
     end
-    return
-  end
-
-  if event == "CHARACTER_POINTS_CHANGED" then
-    if BCS then BCS.needScanTalents = true end
-    return
-  end
-
-  if event == "PLAYER_AURAS_CHANGED" then
-    if BCS then BCS.needScanAuras = true end
-    return
-  end
-
-  if event == "CHAT_MSG_SKILL" then
-    if BCS then BCS.needScanSkills = true end
     return
   end
 end)
@@ -9666,21 +9322,6 @@ updateFrame:SetScript("OnUpdate", function()
   attendanceTimer = attendanceTimer + arg1
   badgeSyncTimer = badgeSyncTimer + arg1
   achLeaderTimer = achLeaderTimer + arg1
-
-  -- BCS inventory debounce: coalesce rapid gear-change events into one scan
-  if BCS and LeafVE.bcsInventoryDebouncePending then
-    LeafVE.bcsInventoryDebounceTimer = LeafVE.bcsInventoryDebounceTimer - arg1
-    if LeafVE.bcsInventoryDebounceTimer <= 0 then
-      LeafVE.bcsInventoryDebouncePending = false
-      BCS.needScanGear   = true
-      BCS.needScanSkills = true
-      -- Broadcast updated BCS stats after gear debounce settles
-      if LeafVE.statsBroadcastPending then
-        LeafVE.statsBroadcastPending = false
-        LeafVE:BroadcastMyStats()
-      end
-    end
-  end
 
   if groupCheckTimer >= 30 then
     groupCheckTimer = 0
@@ -9840,40 +9481,79 @@ SlashCmdList["LEAFVE"] = function(msg)
     LeafVE.UI = { activeTab = "me" }
     LeafVE:ToggleUI()
 
-  elseif string.sub(trimmedMsg, 1, 6) == "shout " then
-    -- /lve shout <name>  (Shoutout V2 slash command)
-    local targetName = Trim(string.sub(msg, 7))
-    if not targetName or targetName == "" then
-      Print("Usage: /lve shout PlayerName")
+  elseif string.sub(trimmedMsg, 1, 9) == "linkmain " then
+    -- /lve linkmain CharName  — link current character to a main
+    local mainName = Trim(string.sub(msg, string.len("linkmain ") + 1))
+    if mainName == "" then
+      Print("Usage: /lve linkmain CharName")
     else
       EnsureDB()
-      local myKey = LVL_GetCharKey()
-      local targetKey = ShortName(targetName) or targetName
-      LVL_AwardShoutout(myKey, targetKey)
-    end
-
-  elseif string.sub(trimmedMsg, 1, 11) == "altapprove " then
-    -- /lve altapprove altKey mainKey  (officer approves a link request)
-    if not LeafVE:IsAdminRank() then
-      Print("|cFFFF4444You must be an officer to approve alt links.|r")
-    else
-      local rest = Trim(string.sub(msg, 12))
-      local spacePos = string.find(rest, " ")
-      if not spacePos then
-        Print("Usage: /lve altapprove <altName> <mainName>")
-      else
-        local altKey = Trim(string.sub(rest, 1, spacePos - 1))
-        local mainKey = Trim(string.sub(rest, spacePos + 1))
-        EnsureDB()
-        LeafVE_DB.links[altKey] = mainKey
-        LeafVE_DB.lastLinkChange[altKey] = Now()
-        if LeafVE_DB.pendingMerge then LeafVE_DB.pendingMerge[altKey] = nil end
-        if InGuild() then
-          SendAddonMessage("LVL", "MERGE_APPROVE|" .. altKey .. "|" .. mainKey, "GUILD")
-        end
-        Print(string.format("|cff00ff00[LVL]|r Approved: %s linked to %s. Broadcast sent.", altKey, mainKey))
+      local me = ShortName(UnitName("player"))
+      if not me then Print("Error: could not determine your character name.") return end
+      if Lower(me) == Lower(mainName) then
+        Print("You cannot link a character to itself.")
+        return
+      end
+      LeafVE_GlobalDB.altLinks[me] = mainName
+      LeafVE_GlobalDB.registeredChars[me] = true
+      Print(string.format("|cFF2DD35C%s|r is now linked to main |cFFFFD700%s|r. Points will pool together.", me, mainName))
+      if InGuild() then
+        SendAddonMessage("LeafVE", "ALTLINK:"..me..":"..mainName, "GUILD")
       end
     end
+
+  elseif trimmedMsg == "unlinkmain" then
+    -- /lve unlinkmain  — remove link, make character standalone again
+    EnsureDB()
+    local me = ShortName(UnitName("player"))
+    if not me then Print("Error: could not determine your character name.") return end
+    if LeafVE_GlobalDB.altLinks[me] then
+      local oldMain = LeafVE_GlobalDB.altLinks[me]
+      LeafVE_GlobalDB.altLinks[me] = nil
+      Print(string.format("|cFF2DD35C%s|r is now standalone (was linked to |cFFFFD700%s|r).", me, oldMain))
+      if InGuild() then
+        SendAddonMessage("LeafVE", "ALTLINK:"..me..":", "GUILD")
+      end
+    else
+      Print("This character is not linked to any main.")
+    end
+
+  elseif string.sub(trimmedMsg, 1, 14) == "setleaderchar " then
+    -- /lve setleaderchar CharName  — set which character name shows on leaderboard
+    local charName = Trim(string.sub(msg, string.len("setleaderchar ") + 1))
+    if charName == "" then
+      Print("Usage: /lve setleaderchar CharName")
+    else
+      EnsureDB()
+      LeafVE_GlobalDB.leaderChar = charName
+      Print(string.format("Leaderboard display name set to |cFFFFD700%s|r.", charName))
+    end
+
+  elseif trimmedMsg == "listchars" then
+    -- /lve listchars  — list all registered characters on this account
+    EnsureDB()
+    local me = ShortName(UnitName("player"))
+    local effectiveName = GetEffectiveName()
+    Print("|cFFFFD700Registered characters on this account:|r")
+    local found = false
+    for charName, _ in pairs(LeafVE_GlobalDB.registeredChars) do
+      found = true
+      local suffix = ""
+      if LeafVE_GlobalDB.altLinks[charName] then
+        suffix = " |cFF888888→ main: "..LeafVE_GlobalDB.altLinks[charName].."|r"
+      end
+      if me and Lower(charName) == Lower(me) then
+        suffix = suffix.." |cFF2DD35C(current)|r"
+      end
+      Print("  "..charName..suffix)
+    end
+    if not found then
+      Print("  |cFF888888No characters registered yet.|r")
+    end
+    if LeafVE_GlobalDB.leaderChar then
+      Print("Leaderboard display name: |cFFFFD700"..LeafVE_GlobalDB.leaderChar.."|r")
+    end
+    Print("Effective name (points pool): |cFFFFD700"..tostring(effectiveName).."|r")
 
   else
     LeafVE:ToggleUI()
