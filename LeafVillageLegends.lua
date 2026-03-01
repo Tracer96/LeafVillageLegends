@@ -5731,58 +5731,72 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
 
 
   if isWeekly then
-    -- Use the higher of local aggregation and synced weekly data so that stale
-    -- synced broadcasts never hide points that are accurately recorded locally.
+    -- Always prefer authoritative local aggregation over peer-synced cache.
+    -- Fall back to synced data only for remote players not witnessed locally.
     local wk = WeekKey()
-    local syncedWeek = LeafVE_DB.lboard.weekly[wk]
-    local localWeek = (AggForThisWeek())
-    
+    local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
+    local localWeek = AggForThisWeek()
+
+    -- Build a union of guild members and any extra players present only in data tables.
+    local displayPlayers = {}  -- Lower(name) -> guildInfo-like table
     for _, guildInfo in pairs(memberSet) do
-      local name = guildInfo.name
-      local pts
-      local localPts = localWeek[name]
-      local syncedPts = syncedWeek and syncedWeek[name]
-      if localPts and syncedPts then
-        local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-        local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-        pts = localTotal >= syncedTotal and localPts or syncedPts
-      elseif localPts then
-        pts = localPts
-      else
-        pts = syncedPts or {L = 0, G = 0, S = 0}
+      displayPlayers[Lower(guildInfo.name)] = guildInfo
+    end
+    for name, _ in pairs(localWeek) do
+      if not displayPlayers[Lower(name)] then
+        displayPlayers[Lower(name)] = {name = name, class = "Unknown"}
       end
-      local totL = pts.L or 0
-      local totG = pts.G or 0
-      local totS = pts.S or 0
-      local total = totL + totG + totS
+    end
+    for name, _ in pairs(syncedWeek) do
+      if not displayPlayers[Lower(name)] then
+        displayPlayers[Lower(name)] = {name = name, class = "Unknown"}
+      end
+    end
+
+    for _, guildInfo in pairs(displayPlayers) do
+      local name = guildInfo.name
+      -- LOCAL first: prefer AggForThisWeek(); fall back to lboard cache for
+      -- remote members not witnessed locally this week.
+      local wData = localWeek[name] or syncedWeek[name]
+      local wL = wData and (wData.L or 0) or 0
+      local wG = wData and (wData.G or 0) or 0
+      local wS = wData and (wData.S or 0) or 0
+      local total = wL + wG + wS
       table.insert(leaders, {
         name = name, total = total,
-        L = totL, G = totG, S = totS,
+        L = wL, G = wG, S = wS,
         class = guildInfo.class or "Unknown"
       })
     end
   else
+    -- Build a union of guild members and any extra players present only in data tables.
+    local displayPlayers = {}  -- Lower(name) -> guildInfo-like table
     for _, guildInfo in pairs(memberSet) do
-      local name = guildInfo.name
-      local pts
-      local localPts = LeafVE_DB.alltime[name]
-      local syncedPts = LeafVE_DB.lboard.alltime[name]
-      if localPts and syncedPts then
-        local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-        local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-        pts = localTotal >= syncedTotal and localPts or syncedPts
-      elseif localPts then
-        pts = localPts
-      else
-        pts = syncedPts or {L = 0, G = 0, S = 0}
+      displayPlayers[Lower(guildInfo.name)] = guildInfo
+    end
+    for name, _ in pairs(LeafVE_DB.alltime) do
+      if not displayPlayers[Lower(name)] then
+        displayPlayers[Lower(name)] = {name = name, class = "Unknown"}
       end
-      local totL = pts.L or 0
-      local totG = pts.G or 0
-      local totS = pts.S or 0
-      local total = totL + totG + totS
+    end
+    for name, _ in pairs(LeafVE_DB.lboard.alltime) do
+      if not displayPlayers[Lower(name)] then
+        displayPlayers[Lower(name)] = {name = name, class = "Unknown"}
+      end
+    end
+
+    for _, guildInfo in pairs(displayPlayers) do
+      local name = guildInfo.name
+      -- LOCAL first: prefer LeafVE_DB.alltime; fall back to lboard cache for
+      -- remote members whose lifetime data was only received via sync.
+      local lData = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name]
+      local lL = lData and (lData.L or 0) or 0
+      local lG = lData and (lData.G or 0) or 0
+      local lS = lData and (lData.S or 0) or 0
+      local total = lL + lG + lS
       table.insert(leaders, {
         name = name, total = total,
-        L = totL, G = totG, S = totS,
+        L = lL, G = lG, S = lS,
         class = guildInfo.class or "Unknown"
       })
     end
