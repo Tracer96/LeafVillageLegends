@@ -64,7 +64,7 @@ local INSTANCE_MAX_DAILY = 20
 local QUEST_POINTS = 10
 local QUEST_MAX_DAILY = 0
 local LEAF_POINT_DAILY_CAP = 0
-local GROUP_POINTS = 5                -- points awarded per guild group tick per guildie
+local GROUP_POINTS = 10               -- points awarded per guild group tick per guildie
 local GROUP_POINTS_DAILY_CAP = 500    -- daily cap for group tick points only
 
 local SEASON_REWARD_1 = 10
@@ -7124,8 +7124,8 @@ local function BuildWelcomePanel(panel)
   AddLine("legendary badges at 7 and 30 days straight.", 20)
   yOffset = yOffset - 4
 
-  panel.welcomeGroupHeader = AddLine("|cFFFFD700Group Time|r  (+5 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)", 10)
-  panel.welcomeGroupDetail = AddLine("Spend time in a party or raid with online guildmates. Earn 5 LP", 20)
+  panel.welcomeGroupHeader = AddLine("|cFFFFD700Group Time|r  (+10 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)", 10)
+  panel.welcomeGroupDetail = AddLine("Spend time in a party or raid with online guildmates. Earn 10 LP", 20)
   AddLine("per online guildie per session. Offline and AFK members do not count.", 20)
   yOffset = yOffset - 4
 
@@ -8652,10 +8652,10 @@ function LeafVE.UI:RefreshWelcome()
     p.welcomeLoginLine:SetText("|cFFFFD700Daily Login|r  (+20 LP)")
   end
   if p.welcomeGroupHeader then
-    p.welcomeGroupHeader:SetText("|cFFFFD700Group Time|r  (+5 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)")
+    p.welcomeGroupHeader:SetText("|cFFFFD700Group Time|r  (+10 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)")
   end
   if p.welcomeGroupDetail then
-    p.welcomeGroupDetail:SetText("Spend time in a party or raid with online guildmates. Earn 5 LP")
+    p.welcomeGroupDetail:SetText("Spend time in a party or raid with online guildmates. Earn 10 LP")
   end
   if p.welcomeSOHeader then
     p.welcomeSOHeader:SetText(string.format("|cFFFFD700Shoutouts|r  (+%d LP each)", soPts))
