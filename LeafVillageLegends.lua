@@ -90,7 +90,7 @@ local SEASON_REWARD_5 = 1
 local SHOUTOUT_V2_POINTS = 10
 local SHOUTOUT_GIVER_COOLDOWN = 3600   -- 1 hour between shoutouts from same giver
 local SHOUTOUT_TARGET_COOLDOWN = 3600  -- 1 hour between receiving from same source
-local SHOUTOUT_V2_MAX_PER_DAY = 3      -- max shoutouts a giver can give per day
+local SHOUTOUT_V2_MAX_PER_DAY = 2      -- max shoutouts a giver can give per day
 
 -- Guild ranks that can access the Admin tab
 local ADMIN_RANKS = { anbu = true, sannin = true, hokage = true }
@@ -465,6 +465,7 @@ LeafVE.instanceJoinedAt = nil
 LeafVE.instanceZone = nil
 LeafVE.instanceHasGuildie = false
 LeafVE.instanceBossesKilledThisRun = 0
+LeafVE.instanceIsRaid = false
 LeafVE.recentBossKills = {}  -- bossName -> timestamp, for dedup within a short window
 LeafVE.lastGroupAwardTime = nil
 LeafVE.lastCombatAt = 0
@@ -527,7 +528,13 @@ local function FormatAchievementName(achID)
   return formatted
 end
 
-local function InGuild() return (IsInGuild and IsInGuild()) and true or false end
+local function InGuild()
+  if IsInGuild then return IsInGuild() and true or false end
+  -- Fallback for WoW 1.12 environments where IsInGuild may not exist:
+  -- GetGuildInfo("player") returns the guild name when in a guild, nil otherwise.
+  local g = GetGuildInfo and GetGuildInfo("player")
+  return type(g) == "string" and g ~= ""
+end
 
 local function DayKeyFromTS(ts)
   local d = date("*t", ts)
@@ -1619,7 +1626,9 @@ end
 
 function LeafVE:GetMemberGuildRank(name)
   if not name then return nil end
-  local data = self.guildRosterCache[Lower(name)]
+  local lname = Lower(name)
+  local data = self.guildRosterCache[lname]
+    or (LeafVE_DB and LeafVE_DB.persistentRoster and LeafVE_DB.persistentRoster[lname])
   return data and data.rank or nil
 end
 
@@ -1638,7 +1647,7 @@ function LeafVE:GetGroupGuildies()
         or self:IsKnownGuildie(name)
       if name and isGuildie then
         local rank = self:GetMemberGuildRank(name)
-        if rank and VALID_GUILD_RANKS[rank] then
+        if rank and ACCESS_RANKS[Lower(Trim(rank))] then
           table.insert(guildies, name)
         end
       end
@@ -2000,7 +2009,7 @@ function LeafVE:GiveShoutout(targetName, reason)
     end
     
     message = message .. " (+"..shoutPts.." Leaf Points each)"
-    SendChatMessage(message, "GUILD")
+    SendChatMessage(StripColorCodes(message), "GUILD")
     SendAddonMessage("LeafVE", "SHOUTOUT:"..giverName..":"..targetName, "GUILD")
   end
   
