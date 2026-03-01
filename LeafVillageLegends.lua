@@ -18,13 +18,13 @@ if not string.match then
 end
 
 LeafVE = LeafVE or {}
-LeafVE.name = "LeafVillageLegends"
+LeafVE.name = "LeafVillageLegeds"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.2"
+LeafVE.version = "11.3"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
-LeafVE.minCompatVersion = "11.2"
+LeafVE.minCompatVersion = "11.3"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
