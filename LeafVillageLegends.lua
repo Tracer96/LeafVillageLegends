@@ -2029,17 +2029,20 @@ function LeafVE:BroadcastLeaderboardData()
   end
   
   -- Send in chunks to stay within the 255-byte WoW addon message limit.
-  -- "LBOARD:" prefix uses 7 chars (255 - 7 = 248 available). We use 220 to
-  -- stay well under the limit and account for any protocol overhead.
+  -- "LBOARD:" prefix uses 7 chars; "EPOCH:<10-digit>,": up to 18 chars.
+  -- 255 - 7 - 18 = 230 available for entries; we use 210 to leave an
+  -- additional safety margin for any protocol overhead.
   if not InGuild() then return end
-  local MAX_CHUNK = 220
+  local resetEpoch = (LeafVE_GlobalDB and LeafVE_GlobalDB.globalLeafResetAt) or 0
+  local epochPrefix = "EPOCH:"..resetEpoch..","
+  local MAX_CHUNK = 210
   local chunk = {}
   local chunkLen = 0
   
   for _, entry in ipairs(data) do
     local sep = (chunkLen > 0) and 1 or 0  -- account for comma separator
     if chunkLen > 0 and chunkLen + sep + string.len(entry) > MAX_CHUNK then
-      SendAddonMessage("LeafVE", "LBOARD:"..table.concat(chunk, ","), "GUILD")
+      SendAddonMessage("LeafVE", "LBOARD:"..epochPrefix..table.concat(chunk, ","), "GUILD")
       chunk = {}
       chunkLen = 0
       sep = 0
@@ -2049,7 +2052,7 @@ function LeafVE:BroadcastLeaderboardData()
   end
   
   if table.getn(chunk) > 0 then
-    SendAddonMessage("LeafVE", "LBOARD:"..table.concat(chunk, ","), "GUILD")
+    SendAddonMessage("LeafVE", "LBOARD:"..epochPrefix..table.concat(chunk, ","), "GUILD")
   end
   
 end
@@ -2320,13 +2323,14 @@ local function VersionLessThan(a, b)
 end
 
 -- Returns true when a sender's known version meets LeafVE.minCompatVersion.
--- If the sender's version has not been received yet (VERSIONRSP not yet seen),
--- we optimistically allow the message so we don't silently drop data on the
--- very first login before any version exchange has occurred.
+-- If the version-exchange table has been initialised (VERSIONREQ was sent on
+-- login) but we have not yet received a VERSIONRSP from this sender, we
+-- conservatively reject their messages to prevent stale data from old clients
+-- polluting the board before the handshake completes.
 local function IsSenderCompatible(sender)
   if not LeafVE.versionResponses then return true end
   local senderVer = LeafVE.versionResponses[sender]
-  if not senderVer then return true end
+  if not senderVer then return false end
   return not VersionLessThan(senderVer, LeafVE.minCompatVersion)
 end
 
@@ -2640,7 +2644,35 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
   elseif string.sub(message, 1, 7) == "LBOARD:" then
     if not IsSenderCompatible(sender) then return end
     local lboardData = string.sub(message, 8)
-    
+
+    -- Parse optional EPOCH:<timestamp>, prefix (added to guard against stale
+    -- data from players who missed a guild-wide reset while offline).
+    local incomingEpoch = 0
+    if string.sub(lboardData, 1, 6) == "EPOCH:" then
+      local commaPos = string.find(lboardData, ",")
+      if not commaPos then return end  -- malformed epoch prefix; discard
+      incomingEpoch = tonumber(string.sub(lboardData, 7, commaPos - 1)) or 0
+      lboardData = string.sub(lboardData, commaPos + 1)
+    end
+
+    -- Drop the entire payload when it comes from a sender who has not yet
+    -- applied a reset that we already know about (their data is pre-reset).
+    local myEpoch = (LeafVE_GlobalDB and LeafVE_GlobalDB.globalLeafResetAt) or 0
+    if incomingEpoch < myEpoch then return end
+
+    -- If the sender carries a newer reset epoch we haven't seen, wipe our own
+    -- data first so pre-reset points are not preserved on our side.
+    EnsureDB()
+    local myResetAt = LeafVE_DB.lastLeafResetAt or 0
+    if incomingEpoch > myResetAt then
+      LeafVE:HardResetLeafPoints_Local()
+      -- Override the timestamps set by HardResetLeafPoints_Local so they
+      -- reflect the original admin-reset time, not the current wall-clock.
+      LeafVE_DB.lastLeafResetAt = incomingEpoch
+      if LeafVE_GlobalDB then LeafVE_GlobalDB.globalLeafResetAt = incomingEpoch end
+      Print("|cFFFF4444A guild-wide Leaf Points reset was detected. Your data has been wiped.|r")
+    end
+
     -- Parse comma-separated player entries
     local startPos = 1
     while startPos <= string.len(lboardData) do
