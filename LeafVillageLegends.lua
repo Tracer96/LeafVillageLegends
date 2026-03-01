@@ -887,7 +887,7 @@ function LeafVE:HardResetLeafPoints_Local()
   LeafVE_DB.groupSessions = {}
   LeafVE_DB.groupCooldowns = {}
   LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
-  -- Record reset timestamp so offline alts on the same account are also wiped on login
+  -- Record reset timestamp so offline characters on the same account are also wiped on login
   LeafVE_DB.lastLeafResetAt = resetNow
   if LeafVE_GlobalDB then LeafVE_GlobalDB.globalLeafResetAt = resetNow end
   -- Refresh all visible panels (handles me, leaderWeek, leaderLife, etc.)
@@ -6829,8 +6829,6 @@ local function BuildAdminPanel(panel)
   UpdateAdminScroll()
 end
 
-
-local function BuildJoinPanel
 
 local function BuildJoinPanel(panel)
   local joinText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
