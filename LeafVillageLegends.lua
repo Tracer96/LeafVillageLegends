@@ -66,6 +66,7 @@ local QUEST_MAX_DAILY = 0
 local LEAF_POINT_DAILY_CAP = 0
 local GROUP_POINTS = 5                -- points awarded per guild group tick per guildie
 local GROUP_POINTS_DAILY_CAP = 500    -- daily cap for group tick points only
+local GRPAWARD_GRACE_PERIOD = 60      -- seconds non-leaders wait for leader broadcast before self-awarding
 
 local SEASON_REWARD_1 = 10
 local SEASON_REWARD_2 = 5
@@ -1423,75 +1424,115 @@ end
 
 function LeafVE:GetGroupHash(members) table.sort(members) return table.concat(members, ",") end
 
+-- Shared helper: apply a group-point award for the local player.
+-- Handles daily cap, AddPoints, history, badges, and chat feedback.
+-- Returns the number of points actually awarded (0 if capped or ineligible).
+function LeafVE:ApplyGroupPointAward(playerName, pointsPerGuildie, numGuildies, guildieList)
+  EnsureDB()
+  local today = DayKey()
+  if not LeafVE_DB.groupPointsToday then LeafVE_DB.groupPointsToday = {} end
+  if not LeafVE_DB.groupPointsToday[playerName] then LeafVE_DB.groupPointsToday[playerName] = {} end
+  local todayData = LeafVE_DB.groupPointsToday[playerName]
+  if todayData.date ~= today then todayData.date = today todayData.earned = 0 end
+  if GROUP_POINTS_DAILY_CAP ~= 0 then
+    local earned = todayData.earned or 0
+    if earned >= GROUP_POINTS_DAILY_CAP then
+      Print(string.format("|cFFFF4444Group points skipped — daily group cap of %d LP reached!|r", GROUP_POINTS_DAILY_CAP))
+      return 0
+    end
+  end
+  local points = pointsPerGuildie * numGuildies
+  if GROUP_POINTS_DAILY_CAP ~= 0 then
+    local remaining = GROUP_POINTS_DAILY_CAP - (todayData.earned or 0)
+    if points > remaining then points = remaining end
+  end
+  local awarded = self:AddPoints(playerName, "G", points)
+  if awarded and awarded > 0 then
+    todayData.earned = (todayData.earned or 0) + awarded
+    self:AddToHistory(playerName, "G", awarded, "Grouped with "..numGuildies.." guildies: "..guildieList)
+    LeafVE_DB.groupSessions[playerName] = (LeafVE_DB.groupSessions[playerName] or 0) + 1
+    self:CheckBadgeMilestones(playerName)
+    Print(string.format("Group points awarded! +%d LP (%d per guildie x%d guildies)", awarded, pointsPerGuildie, numGuildies))
+  end
+  return awarded or 0
+end
+
 function LeafVE:OnGroupUpdate()
   local guildies = self:GetGroupGuildies() local numGuildies = table.getn(guildies)
-  if numGuildies == 0 then self.currentGroupStart = nil self.currentGroupMembers = {} self.lastGroupAwardTick = nil return end
+  if numGuildies == 0 then self.currentGroupStart = nil self.currentGroupMembers = {} self.lastGroupAwardTick = nil self.grpAwardFallbackAt = nil return end
   local groupHash = self:GetGroupHash(guildies)
   if not self.currentGroupStart or groupHash ~= self:GetGroupHash(self.currentGroupMembers) then
-    self.currentGroupStart = Now() self.currentGroupMembers = guildies self.lastGroupAwardTick = nil
+    self.currentGroupStart = Now() self.currentGroupMembers = guildies self.lastGroupAwardTick = nil self.grpAwardFallbackAt = nil
     Print("Group leaf points are now active! (grouped with: "..table.concat(guildies, ", ")..")")
     return
   end
   EnsureDB()
+  local isRaid = GetNumRaidMembers() > 0
   local groupInterval = GROUP_POINT_INTERVAL
   local currentTick = math.floor(Now() / groupInterval)
   local lastAwardedTick = self.lastGroupAwardTick or -1
   if currentTick > lastAwardedTick and self.currentGroupStart and (Now() - self.currentGroupStart) >= groupInterval then
-    local playerName = ShortName(UnitName("player"))
-    if playerName then
-      -- AFK / inactivity check
-      if self:IsPlayerInactive() then
-        self.lastGroupAwardTick = currentTick
-        Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
-        return
-      end
-      -- Require at least one party member with a valid Leaf Village rank
-      local hasValidRank = false
-      for _, guildieName in ipairs(guildies) do
-        local info = self.guildRosterCache[Lower(guildieName)]
-        if info and info.rank and ACCESS_RANKS[Lower(Trim(info.rank))] then
-          hasValidRank = true
-          break
-        end
-      end
-      if not hasValidRank then
-        self.lastGroupAwardTick = currentTick
-        return
-      end
-      local pointsPerGuildie = GROUP_POINTS
-      -- Enforce daily cap for group points
-      local today = DayKey()
-      if not LeafVE_DB.groupPointsToday then LeafVE_DB.groupPointsToday = {} end
-      if not LeafVE_DB.groupPointsToday[playerName] then LeafVE_DB.groupPointsToday[playerName] = {} end
-      local todayData = LeafVE_DB.groupPointsToday[playerName]
-      if todayData.date ~= today then
-        todayData.date = today
-        todayData.earned = 0
-      end
-      if GROUP_POINTS_DAILY_CAP ~= 0 then
-        local earned = todayData.earned or 0
-        if earned >= GROUP_POINTS_DAILY_CAP then
+    local amLeader = UnitIsPartyLeader and UnitIsPartyLeader("player")
+    if amLeader then
+      -- LEADER: calculate points, award self, then broadcast to party/raid
+      local playerName = ShortName(UnitName("player"))
+      if playerName then
+        -- AFK / inactivity check
+        if self:IsPlayerInactive() then
           self.lastGroupAwardTick = currentTick
-          Print(string.format("|cFFFF4444Group points skipped — daily group cap of %d LP reached!|r", GROUP_POINTS_DAILY_CAP))
+          Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
           return
         end
+        -- Require at least one party member with a valid Leaf Village rank
+        local hasValidRank = false
+        for _, guildieName in ipairs(guildies) do
+          local info = self.guildRosterCache[Lower(guildieName)]
+          if info and info.rank and ACCESS_RANKS[Lower(Trim(info.rank))] then
+            hasValidRank = true
+            break
+          end
+        end
+        if not hasValidRank then
+          self.lastGroupAwardTick = currentTick
+          return
+        end
+        self:ApplyGroupPointAward(playerName, GROUP_POINTS, numGuildies, table.concat(guildies, ", "))
+        self.lastGroupAwardTick = currentTick
+        -- Broadcast the award to all other party/raid members so they all get the same result
+        local channel = isRaid and "RAID" or "PARTY"
+        SendAddonMessage("LeafVE", "GRPAWARD:"..GROUP_POINTS.."|"..numGuildies.."|"..table.concat(guildies, ","), channel)
       end
-      local points = pointsPerGuildie * numGuildies
-      if GROUP_POINTS_DAILY_CAP ~= 0 then
-        local remaining = GROUP_POINTS_DAILY_CAP - (todayData.earned or 0)
-        if points > remaining then points = remaining end
+    else
+      -- NON-LEADER: wait for the leader's GRPAWARD broadcast; fall back after grace period
+      if not self.grpAwardFallbackAt then
+        self.grpAwardFallbackAt = Now() + GRPAWARD_GRACE_PERIOD
+      elseif Now() >= self.grpAwardFallbackAt then
+        -- Grace period elapsed — leader may not have the addon; self-award as fallback
+        self.grpAwardFallbackAt = nil
+        local playerName = ShortName(UnitName("player"))
+        if playerName then
+          if self:IsPlayerInactive() then
+            self.lastGroupAwardTick = currentTick
+            Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
+            return
+          end
+          local hasValidRank = false
+          for _, guildieName in ipairs(guildies) do
+            local info = self.guildRosterCache[Lower(guildieName)]
+            if info and info.rank and ACCESS_RANKS[Lower(Trim(info.rank))] then
+              hasValidRank = true
+              break
+            end
+          end
+          if not hasValidRank then
+            self.lastGroupAwardTick = currentTick
+            return
+          end
+          self:ApplyGroupPointAward(playerName, GROUP_POINTS, numGuildies, table.concat(guildies, ", "))
+          self.lastGroupAwardTick = currentTick
+        end
       end
-      local awarded = self:AddPoints(playerName, "G", points)
-      if awarded and awarded > 0 then
-        todayData.earned = (todayData.earned or 0) + awarded
-        self:AddToHistory(playerName, "G", awarded, "Grouped with "..numGuildies.." guildies: "..table.concat(guildies, ", "))
-        LeafVE_DB.groupSessions[playerName] = (LeafVE_DB.groupSessions[playerName] or 0) + 1
-        self:CheckBadgeMilestones(playerName)
-      end
-      self.lastGroupAwardTick = currentTick
-      if awarded and awarded > 0 then
-        Print(string.format("Group points awarded! +%d LP (%d per guildie x%d guildies)", awarded, pointsPerGuildie, numGuildies))
-      end
+      -- else: within grace period, wait for leader's broadcast
     end
   end
 end
@@ -2826,6 +2867,69 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
         end
       end
     end
+    return
+
+  -- Handle group award broadcast from party/raid leader
+  elseif string.sub(message, 1, 9) == "GRPAWARD:" then
+    -- Ignore if we are the leader (we already awarded ourselves in OnGroupUpdate)
+    if UnitIsPartyLeader and UnitIsPartyLeader("player") then return end
+    -- Verify the sender is the actual party/raid leader
+    local isFromLeader = false
+    local numRaid = GetNumRaidMembers()
+    if numRaid > 0 then
+      for i = 1, numRaid do
+        local raidName = UnitName("raid"..i)
+        if raidName and Lower(ShortName(raidName)) == Lower(sender) then
+          if UnitIsPartyLeader("raid"..i) then isFromLeader = true break end
+        end
+      end
+    else
+      local numParty = GetNumPartyMembers()
+      for i = 1, numParty do
+        local partyName = UnitName("party"..i)
+        if partyName and Lower(ShortName(partyName)) == Lower(sender) then
+          if UnitIsPartyLeader("party"..i) then isFromLeader = true break end
+        end
+      end
+    end
+    if not isFromLeader then return end
+    -- Parse "GRPAWARD:pointsPerGuildie|numGuildies|guildie1,guildie2,..."
+    local rest = string.sub(message, 10)
+    local p1 = string.find(rest, "|")
+    if not p1 then return end
+    local pointsPerGuildie = tonumber(string.sub(rest, 1, p1 - 1))
+    local rest2 = string.sub(rest, p1 + 1)
+    local p2 = string.find(rest2, "|")
+    if not p2 then return end
+    local numGuildies = tonumber(string.sub(rest2, 1, p2 - 1))
+    local guildieNames = string.sub(rest2, p2 + 1)
+    if not pointsPerGuildie or not numGuildies then return end
+    local playerName = ShortName(UnitName("player"))
+    if not playerName then return end
+    -- Verify this player is in the guildie list broadcast by the leader
+    local inList = false
+    local pos = 1
+    local searchStr = guildieNames .. ","
+    while pos <= string.len(searchStr) do
+      local commaPos = string.find(searchStr, ",", pos)
+      if not commaPos then break end
+      local entry = string.sub(searchStr, pos, commaPos - 1)
+      if Lower(entry) == Lower(playerName) then inList = true break end
+      pos = commaPos + 1
+    end
+    if not inList then return end
+    -- AFK / inactivity check (each member's own state still matters)
+    if self:IsPlayerInactive() then
+      self.lastGroupAwardTick = math.floor(Now() / GROUP_POINT_INTERVAL)
+      self.grpAwardFallbackAt = nil
+      Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
+      return
+    end
+    -- Apply points with local daily-cap enforcement via shared helper
+    self:ApplyGroupPointAward(playerName, pointsPerGuildie, numGuildies, guildieNames)
+    -- Mark this tick as done and clear the fallback timer
+    self.lastGroupAwardTick = math.floor(Now() / GROUP_POINT_INTERVAL)
+    self.grpAwardFallbackAt = nil
     return
 
   end  -- ← CLOSE THE OnAddonMessage FUNCTION
