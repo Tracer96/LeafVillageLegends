@@ -491,6 +491,18 @@ local function Now() return time() end
 local function Lower(s) return s and string.lower(s) or "" end
 local function Trim(s) return (string.gsub(s or "", "^%s*(.-)%s*$", "%1")) end
 
+-- Strip WoW color/link escape codes so strings are safe for SendChatMessage().
+-- |cffRRGGBB, |r, |H...|h, and |h are rejected by the 1.12 client when sent
+-- over the network; they are only valid in local AddMessage() calls.
+local function StripColorCodes(text)
+  if not text then return "" end
+  text = string.gsub(text, "|c%x%x%x%x%x%x%x%x", "")
+  text = string.gsub(text, "|r", "")
+  text = string.gsub(text, "|H.-|h", "")
+  text = string.gsub(text, "|h", "")
+  return text
+end
+
 local function ShortName(name)
   if not name then return nil end
   local dash = string.find(name, "-")
@@ -829,7 +841,7 @@ function LeafVE:AwardBadge(playerName, badgeId)
     if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
       titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
     end
-    SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
+    SendChatMessage(StripColorCodes(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!"), "GUILD")
   end
 
   -- Broadcast badges immediately after awarding
@@ -1173,7 +1185,7 @@ function LeafVE:CheckAndAwardBadge(playerName, badgeId)
         if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
           titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
         end
-        SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
+        SendChatMessage(StripColorCodes(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!"), "GUILD")
       end
       self:BroadcastBadges()
       if LeafVE.UI.cardCurrentPlayer == playerName then
@@ -2328,9 +2340,14 @@ function LeafVE:MergeShoutoutHistory(payload)
               -- New entry: record it for history/badge tracking only.
               -- Points for shoutouts are awarded in real-time via the SHOUTOUT: handler.
               LeafVE_DB.shoutouts[giver][target] = timestamp
-              self:CheckBadgeMilestones(target)
-              self:CheckAndAwardBadge(giver, "first_shoutout_given")
-              self:CheckAndAwardBadge(target, "first_shoutout_received")
+              -- Only trigger badge checks for shoutouts from today so that
+              -- historical data synced after a reset does not retroactively
+              -- re-award badges.
+              if DayKeyFromTS(timestamp) == DayKey() then
+                self:CheckBadgeMilestones(target)
+                self:CheckAndAwardBadge(giver, "first_shoutout_given")
+                self:CheckAndAwardBadge(target, "first_shoutout_received")
+              end
               updated = true
             elseif timestamp > existing then
               -- Newer timestamp for an already-known entry: update only, no extra point
@@ -7494,7 +7511,7 @@ local function BuildAdminPanel(panel)
     local lines = BuildStandingsLines()
     if InGuild() then
       for _, line in ipairs(lines) do
-        SendChatMessage(line, "GUILD")
+        SendChatMessage(StripColorCodes(line), "GUILD")
       end
       Print("Weekly standings announced to guild!")
     else
