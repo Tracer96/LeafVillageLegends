@@ -634,6 +634,7 @@ local function EnsureDB()
   if not LeafVE_DB.shoutouts then LeafVE_DB.shoutouts = {} end
   if not LeafVE_DB.pointHistory then LeafVE_DB.pointHistory = {} end
   if not LeafVE_DB.badges then LeafVE_DB.badges = {} end
+  if not LeafVE_DB.badgesAnnounced then LeafVE_DB.badgesAnnounced = {} end
   if not LeafVE_DB.attendance then LeafVE_DB.attendance = {} end
   if not LeafVE_DB.weeklyRecap then LeafVE_DB.weeklyRecap = {} end
   if not LeafVE_DB.loginStreaks then LeafVE_DB.loginStreaks = {} end
@@ -689,8 +690,17 @@ end
 function LeafVE:AddToHistory(playerName, pointType, amount, reason)
   EnsureDB() playerName = ShortName(playerName) if not playerName then return end
   if not LeafVE_DB.pointHistory[playerName] then LeafVE_DB.pointHistory[playerName] = {} end
-  table.insert(LeafVE_DB.pointHistory[playerName], {timestamp = Now(), type = pointType, amount = amount, reason = reason or "Unknown"})
+  local now = Now()
+  local dateStr = date("%m/%d %H:%M", now)
+  table.insert(LeafVE_DB.pointHistory[playerName], {timestamp = now, type = pointType, amount = amount, reason = reason or "Unknown", dateStr = dateStr})
   while table.getn(LeafVE_DB.pointHistory[playerName]) > 500 do table.remove(LeafVE_DB.pointHistory[playerName], 1) end
+  -- Broadcast this transaction to all online guild members
+  local me = ShortName(UnitName("player"))
+  if me and playerName == me and InGuild() then
+    local truncReason = reason or "Unknown"
+    if string.len(truncReason) > 80 then truncReason = string.sub(truncReason, 1, 80) end
+    SendAddonMessage("LeafVE", "PTXN:"..playerName..SEP..tostring(amount)..SEP..tostring(now)..SEP..(pointType or "")..SEP..truncReason, "GUILD")
+  end
 end
 
 function LeafVE:AwardBadge(playerName, badgeId)
@@ -743,16 +753,19 @@ function LeafVE:AwardBadge(playerName, badgeId)
     Print("|cFF"..RGBToHex(qr, qg, qb).."["..qualityLabel.."] Badge Earned:|r "..badge.name.." - "..badge.desc)
   end
 
-  -- Send guild chat announcement
+  -- Send guild chat announcement (only once per badge, never re-announce)
   if InGuild() then
-    local badgeQuality = badge.quality or BADGE_QUALITY.COMMON
-    local qr, qg, qb = GetBadgeQualityColor(badgeQuality)
-    local badgeLink = "|cFF"..RGBToHex(qr, qg, qb).."|Hleafve_badge:"..badge.id.."|h["..badge.name.."]|h|r"
-    local titleStr = ""
-    if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
-      titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
+    if not LeafVE_DB.badgesAnnounced[badgeId] then
+      LeafVE_DB.badgesAnnounced[badgeId] = true
+      local badgeQuality = badge.quality or BADGE_QUALITY.COMMON
+      local qr, qg, qb = GetBadgeQualityColor(badgeQuality)
+      local badgeLink = "|cFF"..RGBToHex(qr, qg, qb).."|Hleafve_badge:"..badge.id.."|h["..badge.name.."]|h|r"
+      local titleStr = ""
+      if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
+        titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
+      end
+      SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
     end
-    SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
   end
 
   -- Broadcast badges immediately after awarding
@@ -989,12 +1002,16 @@ function LeafVE:CheckAndAwardBadge(playerName, badgeId)
       end
       Print("|cFF"..RGBToHex(qr, qg, qb).."["..qualityLabel.."] Badge Earned:|r "..badge.name.." - "..badge.desc)
       if InGuild() then
-        local badgeLink = "|cFF"..RGBToHex(qr, qg, qb).."|Hleafve_badge:"..badge.id.."|h["..badge.name.."]|h|r"
-        local titleStr = ""
-        if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
-          titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
+        -- Only announce in guild chat once per badge; never re-announce
+        if not LeafVE_DB.badgesAnnounced[badgeId] then
+          LeafVE_DB.badgesAnnounced[badgeId] = true
+          local badgeLink = "|cFF"..RGBToHex(qr, qg, qb).."|Hleafve_badge:"..badge.id.."|h["..badge.name.."]|h|r"
+          local titleStr = ""
+          if LeafVE_AchTest_DB and LeafVE_AchTest_DB[playerName] and LeafVE_AchTest_DB[playerName].equippedTitle and LeafVE_AchTest_DB[playerName].equippedTitle ~= "" then
+            titleStr = "|cFFFF8000[" .. LeafVE_AchTest_DB[playerName].equippedTitle .. "]|r"
+          end
+          SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
         end
-        SendChatMessage(titleStr.."[LeafVE Note] received "..badgeLink.." for contributing to the guild!", "GUILD")
       end
       self:BroadcastBadges()
       if LeafVE.UI.cardCurrentPlayer == playerName then
@@ -1428,6 +1445,19 @@ function LeafVE:OnGroupUpdate()
         Print("|cFFFF4444Group points skipped — you appear to be AFK or inactive!|r")
         return
       end
+      -- Require at least one party member with a valid Leaf Village rank
+      local hasValidRank = false
+      for _, guildieName in ipairs(guildies) do
+        local info = self.guildRosterCache[Lower(guildieName)]
+        if info and info.rank and ACCESS_RANKS[Lower(Trim(info.rank))] then
+          hasValidRank = true
+          break
+        end
+      end
+      if not hasValidRank then
+        self.lastGroupAwardTick = currentTick
+        return
+      end
       local pointsPerGuildie = GROUP_POINTS
       -- Enforce daily cap for group points
       local today = DayKey()
@@ -1827,6 +1857,20 @@ function LeafVE:BroadcastBadges()
     local message = table.concat(badgeData, ",")
     SendAddonMessage("LeafVE", "BADGES:"..message, "GUILD")
   end
+end
+
+-- Broadcast badge progress metrics so other guild members can display progress bars
+-- Format: BADGEPROG:<name>:<groupSessions>:<attendance>:<loginStreak>:<guildJoinDate>
+function LeafVE:BroadcastBadgeProgress()
+  if not InGuild() then return end
+  local me = ShortName(UnitName("player"))
+  if not me then return end
+  EnsureDB()
+  local groupSessions = LeafVE_DB.groupSessions[me] or 0
+  local attendance = table.getn(LeafVE_DB.attendance[me] or {})
+  local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[me] and LeafVE_DB.loginStreaks[me].current) or 0
+  local joinDate = (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[me]) or 0
+  SendAddonMessage("LeafVE", "BADGEPROG:"..me..SEP..groupSessions..SEP..attendance..SEP..streak..SEP..joinDate, "GUILD")
 end
 
 function LeafVE:BroadcastLeaderboardData()
@@ -2375,6 +2419,50 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     end
     
     return
+
+  -- Parse badge progress broadcast
+  elseif string.sub(message, 1, 10) == "BADGEPROG:" then
+    if not IsSenderCompatible(sender) then return end
+    local rest = string.sub(message, 11)
+    local p1 = string.find(rest, SEP)
+    if not p1 then return end
+    local progName = string.sub(rest, 1, p1 - 1)
+    local shortProgName = ShortName(progName)
+    if Lower(sender) ~= Lower(shortProgName or progName) then return end
+    local rest2 = string.sub(rest, p1 + 1)
+    local p2 = string.find(rest2, SEP)
+    if not p2 then return end
+    local groupSessions = tonumber(string.sub(rest2, 1, p2 - 1)) or 0
+    local rest3 = string.sub(rest2, p2 + 1)
+    local p3 = string.find(rest3, SEP)
+    if not p3 then return end
+    local attendance = tonumber(string.sub(rest3, 1, p3 - 1)) or 0
+    local rest4 = string.sub(rest3, p3 + 1)
+    local p4 = string.find(rest4, SEP)
+    if not p4 then return end
+    local streak = tonumber(string.sub(rest4, 1, p4 - 1)) or 0
+    local joinDate = tonumber(string.sub(rest4, p4 + 1)) or 0
+    EnsureDB()
+    if not LeafVE_DB.groupSessions[progName] or LeafVE_DB.groupSessions[progName] < groupSessions then
+      LeafVE_DB.groupSessions[progName] = groupSessions
+    end
+    if not LeafVE_DB.attendance[progName] then LeafVE_DB.attendance[progName] = {} end
+    -- Pad attendance array to at least the reported count so badge milestone
+    -- checks (which use table.getn) reflect the sender's real attendance tally.
+    while table.getn(LeafVE_DB.attendance[progName]) < attendance do
+      table.insert(LeafVE_DB.attendance[progName], {})
+    end
+    if not LeafVE_DB.loginStreaks[progName] then LeafVE_DB.loginStreaks[progName] = {current = 0} end
+    if (LeafVE_DB.loginStreaks[progName].current or 0) < streak then
+      LeafVE_DB.loginStreaks[progName].current = streak
+    end
+    if joinDate > 0 then
+      if not LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate = {} end
+      if not LeafVE_DB.guildJoinDate[progName] then
+        LeafVE_DB.guildJoinDate[progName] = joinDate
+      end
+    end
+    return
     
   -- Parse shoutout sync message
   elseif string.sub(message, 1, 9) == "SHOUTOUT:" then
@@ -2681,6 +2769,49 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     if LeafVE.UI and LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
       if LeafVE.UI.cardCurrentPlayer and Lower(LeafVE.UI.cardCurrentPlayer) == nameLower then
         LeafVE.UI:RefreshGearPopup(LeafVE.UI.cardCurrentPlayer)
+      end
+    end
+    return
+
+  -- Handle point transaction broadcast from a guild member
+  elseif string.sub(message, 1, 5) == "PTXN:" then
+    if not IsSenderCompatible(sender) then return end
+    local rest = string.sub(message, 6)
+    -- Format: playerName\31amount\31timestamp\31type\31reason
+    local p1 = string.find(rest, SEP)
+    if not p1 then return end
+    local txnName = string.sub(rest, 1, p1 - 1)
+    -- Verify sender matches declared name (anti-spoof)
+    local shortTxnName = ShortName(txnName)
+    if Lower(sender) ~= Lower(shortTxnName or txnName) then return end
+    local rest2 = string.sub(rest, p1 + 1)
+    local p2 = string.find(rest2, SEP)
+    if not p2 then return end
+    local amount = tonumber(string.sub(rest2, 1, p2 - 1))
+    local rest3 = string.sub(rest2, p2 + 1)
+    local p3 = string.find(rest3, SEP)
+    if not p3 then return end
+    local timestamp = tonumber(string.sub(rest3, 1, p3 - 1))
+    local rest4 = string.sub(rest3, p3 + 1)
+    local p4 = string.find(rest4, SEP)
+    if not p4 then return end
+    local txnType = string.sub(rest4, 1, p4 - 1)
+    local reason = string.sub(rest4, p4 + 1)
+    if txnName ~= "" and amount and timestamp then
+      EnsureDB()
+      local me = ShortName(UnitName("player"))
+      -- Don't duplicate our own transactions (we already stored locally)
+      if not (me and Lower(me) == Lower(txnName)) then
+        if not LeafVE_DB.pointHistory[txnName] then
+          LeafVE_DB.pointHistory[txnName] = {}
+        end
+        local dateStr = date("%m/%d %H:%M", timestamp)
+        table.insert(LeafVE_DB.pointHistory[txnName], {timestamp = timestamp, type = txnType, amount = amount or 0, reason = reason or "", dateStr = dateStr})
+        while table.getn(LeafVE_DB.pointHistory[txnName]) > 500 do table.remove(LeafVE_DB.pointHistory[txnName], 1) end
+        -- Refresh live history if open
+        if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.liveHistory and LeafVE.UI.panels.liveHistory:IsVisible() then
+          LeafVE.UI:RefreshLiveHistory()
+        end
       end
     end
     return
@@ -3178,6 +3309,13 @@ viewAllBadgesBtn:SetPoint("TOPLEFT", recentBadgesFrame, "BOTTOMLEFT", 0, 10)
 viewAllBadgesBtn:SetText("View All Badges")
 SkinButtonAccent(viewAllBadgesBtn)
 viewAllBadgesBtn:SetScript("OnClick", function()
+  -- Close other popups when opening badges
+  if LeafVE.UI.achPopup and LeafVE.UI.achPopup:IsVisible() then
+    LeafVE.UI.achPopup:Hide()
+  end
+  if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
+    LeafVE.UI.gearPopup:Hide()
+  end
   if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
     LeafVE.UI.allBadgesFrame:Hide()
   else
@@ -3198,6 +3336,13 @@ gearBtn:SetText("Gear")
 SkinButtonAccent(gearBtn)
 gearBtn:SetScript("OnClick", function()
   if not LeafVE.UI.cardCurrentPlayer then return end
+  -- Close other popups when opening gear
+  if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
+    LeafVE.UI.allBadgesFrame:Hide()
+  end
+  if LeafVE.UI.achPopup and LeafVE.UI.achPopup:IsVisible() then
+    LeafVE.UI.achPopup:Hide()
+  end
   if not LeafVE.UI.gearPopup then
     LeafVE.UI:CreateGearPopup()
   end
@@ -3244,12 +3389,17 @@ self.cardGearBtn = gearBtn
   SkinButtonAccent(viewAllBtn)
 viewAllBtn:SetScript("OnClick", function()
   if not LeafVE.UI.cardCurrentPlayer then return end
-  
+  -- Close other popups when opening achievements
+  if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
+    LeafVE.UI.allBadgesFrame:Hide()
+  end
+  if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
+    LeafVE.UI.gearPopup:Hide()
+  end
   -- Create popup if it doesn't exist
   if not LeafVE.UI.achPopup then
     LeafVE.UI:CreateAchievementListPopup()
   end
-  
   -- Toggle open/closed
   if LeafVE.UI.achPopup:IsVisible() then
     LeafVE.UI.achPopup:Hide()
@@ -7858,8 +8008,12 @@ function LeafVE.UI:Build()
   self.tabBadges:SetPoint("LEFT", self.tabAchievements, "RIGHT", 4, 0)
   self.tabBadges:SetWidth(65)
 
+  self.tabShoutouts = TabButton(f, "Shoutouts", "LeafVE_TabShoutouts")
+  self.tabShoutouts:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
+  self.tabShoutouts:SetWidth(80)
+
   self.tabHistory = TabButton(f, "History", "LeafVE_TabHistory")
-  self.tabHistory:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
+  self.tabHistory:SetPoint("LEFT", self.tabShoutouts, "RIGHT", 4, 0)
   self.tabHistory:SetWidth(60)
 
   self.tabLiveHistory = TabButton(f, "Live History", "LeafVE_TabLiveHistory")
@@ -7950,6 +8104,8 @@ function LeafVE.UI:Build()
   -- Tab click handlers
   self.tabMe:SetScript("OnClick", function()
     self.activeTab = "me"
+    local me = ShortName(UnitName("player"))
+    if me then self:ShowPlayerCard(me) end
     self:Refresh()
   end)
   
@@ -7978,6 +8134,11 @@ function LeafVE.UI:Build()
     self:Refresh()
   end)
   
+  self.tabShoutouts:SetScript("OnClick", function()
+    self.activeTab = "shoutouts"
+    self:Refresh()
+  end)
+
   self.tabAchievements:SetScript("OnClick", function()
     self.activeTab = "achievements"
     self:Refresh()
@@ -8055,7 +8216,7 @@ function LeafVE.UI:Refresh()
     self.activeTab = "me"
   end
 
-  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabHistory, self.tabLiveHistory, self.tabOptions}
+  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabShoutouts, self.tabHistory, self.tabLiveHistory, self.tabOptions}
   if hasAccess then
     for _, tab in ipairs(accessTabs) do
       if tab then tab:Show() end
@@ -8638,6 +8799,7 @@ ef:SetScript("OnEvent", function()
           LeafVE.versionResponses = {}
           SendAddonMessage("LeafVE", "VERSIONREQ", "GUILD")
           LeafVE:BroadcastBadges()
+          LeafVE:BroadcastBadgeProgress()
           LeafVE:BroadcastLeaderboardData()
           
           local bme = ShortName(UnitName("player"))
