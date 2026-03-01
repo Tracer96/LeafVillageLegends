@@ -1777,10 +1777,6 @@ function LeafVE:GiveShoutout(targetName, reason)
   if awardedTarget and awardedTarget > 0 then
     self:AddToHistory(targetName, "S", awardedTarget, "Shoutout from "..giverName..(reason and (": "..reason) or ""))
   end
-  local awardedGiver = self:AddPoints(giverName, "S", shoutPts)
-  if awardedGiver and awardedGiver > 0 then
-    self:AddToHistory(giverName, "S", awardedGiver, "Gave shoutout to "..targetName..(reason and (": "..reason) or ""))
-  end
   self:CheckAndAwardBadge(giverName, "first_shoutout_given")
   
   if InGuild() then
@@ -2069,14 +2065,6 @@ function LeafVE:MergeShoutoutHistory(payload)
               LeafVE_DB.season[target].S = (LeafVE_DB.season[target].S or 0) + 10
               self:CheckBadgeMilestones(target)
               self:AddToHistory(target, "S", 10, "Shoutout from "..giver.." (synced)")
-              if not LeafVE_DB.global[actualDay][giver] then LeafVE_DB.global[actualDay][giver] = {L=0, G=0, S=0} end
-              LeafVE_DB.global[actualDay][giver].S = (LeafVE_DB.global[actualDay][giver].S or 0) + 10
-              if not LeafVE_DB.alltime[giver] then LeafVE_DB.alltime[giver] = {L=0, G=0, S=0} end
-              LeafVE_DB.alltime[giver].S = (LeafVE_DB.alltime[giver].S or 0) + 10
-              if not LeafVE_DB.season[giver] then LeafVE_DB.season[giver] = {L=0, G=0, S=0} end
-              LeafVE_DB.season[giver].S = (LeafVE_DB.season[giver].S or 0) + 10
-              self:CheckBadgeMilestones(giver)
-              self:AddToHistory(giver, "S", 10, "Gave shoutout to "..target.." (synced)")
               self:CheckAndAwardBadge(giver, "first_shoutout_given")
               self:CheckAndAwardBadge(target, "first_shoutout_received")
               updated = true
@@ -2508,7 +2496,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
               LeafVE_DB.shoutouts[msgGiver][targetName] = Now()
               local shoutPtsIncoming = (LeafVE_DB.options and LeafVE_DB.options.shoutoutPoints) or 10
               self:AddPoints(targetName, "S", shoutPtsIncoming)
-              self:AddPoints(msgGiver, "S", shoutPtsIncoming)
             end
             -- If we are the shoutout recipient, award received badges on our machine
             if me and Lower(me) == Lower(targetName) then
