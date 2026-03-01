@@ -9460,9 +9460,6 @@ ef:RegisterEvent("CHAT_MSG_GUILD")
 ef:RegisterEvent("CHAT_MSG_WHISPER")
 ef:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
 ef:RegisterEvent("UNIT_INVENTORY_CHANGED")
-ef:RegisterEvent("CHARACTER_POINTS_CHANGED")
-ef:RegisterEvent("PLAYER_AURAS_CHANGED")
-ef:RegisterEvent("CHAT_MSG_SKILL")
 
 local groupCheckTimer = 0
 local notificationTimer = 0
@@ -9493,13 +9490,6 @@ ef:SetScript("OnEvent", function()
     Print("Loaded v"..LeafVE.version)
     EnsureDB()
     LeafVE:RecordActivity()
-    -- Initialise BCS scan dirty flags so stats are computed on first tab open
-    if BCS then
-      BCS.needScanGear     = true
-      BCS.needScanTalents  = true
-      BCS.needScanAuras    = true
-      BCS.needScanSkills   = true
-    end
     -- One-time migration: purge old "Quest area trigger" history entries
     if not LeafVE_DB.migratedTriggerHistory then
       EnsureDB()
@@ -9633,28 +9623,8 @@ ef:SetScript("OnEvent", function()
   if event == "UNIT_INVENTORY_CHANGED" then
     if arg1 == "player" then
       LeafVE:BroadcastMyGear()
-      -- Debounce BCS gear scan (200 ms, same as standalone BCS addon)
-      if BCS then
-        LeafVE.bcsInventoryDebounceTimer   = 0.2
-        LeafVE.bcsInventoryDebouncePending = true
-        LeafVE.statsBroadcastPending       = true
-      end
+      LeafVE:BroadcastMyStats()
     end
-    return
-  end
-
-  if event == "CHARACTER_POINTS_CHANGED" then
-    if BCS then BCS.needScanTalents = true end
-    return
-  end
-
-  if event == "PLAYER_AURAS_CHANGED" then
-    if BCS then BCS.needScanAuras = true end
-    return
-  end
-
-  if event == "CHAT_MSG_SKILL" then
-    if BCS then BCS.needScanSkills = true end
     return
   end
 end)
@@ -9666,21 +9636,6 @@ updateFrame:SetScript("OnUpdate", function()
   attendanceTimer = attendanceTimer + arg1
   badgeSyncTimer = badgeSyncTimer + arg1
   achLeaderTimer = achLeaderTimer + arg1
-
-  -- BCS inventory debounce: coalesce rapid gear-change events into one scan
-  if BCS and LeafVE.bcsInventoryDebouncePending then
-    LeafVE.bcsInventoryDebounceTimer = LeafVE.bcsInventoryDebounceTimer - arg1
-    if LeafVE.bcsInventoryDebounceTimer <= 0 then
-      LeafVE.bcsInventoryDebouncePending = false
-      BCS.needScanGear   = true
-      BCS.needScanSkills = true
-      -- Broadcast updated BCS stats after gear debounce settles
-      if LeafVE.statsBroadcastPending then
-        LeafVE.statsBroadcastPending = false
-        LeafVE:BroadcastMyStats()
-      end
-    end
-  end
 
   if groupCheckTimer >= 30 then
     groupCheckTimer = 0
