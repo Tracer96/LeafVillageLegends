@@ -680,50 +680,10 @@ local function EnsureDB()
   if not LeafVE_GlobalDB then LeafVE_GlobalDB = {} end
   if not LeafVE_GlobalDB.playerNotes then LeafVE_GlobalDB.playerNotes = {} end
   if not LeafVE_GlobalDB.achievementCache then LeafVE_GlobalDB.achievementCache = {} end
-  if not LeafVE_GlobalDB.altLinks then LeafVE_GlobalDB.altLinks = {} end
-  if not LeafVE_GlobalDB.registeredChars then LeafVE_GlobalDB.registeredChars = {} end
-  if not LeafVE_GlobalDB.guildAltLinks then LeafVE_GlobalDB.guildAltLinks = {} end
   if not LeafVE_GlobalDB.gearCache then LeafVE_GlobalDB.gearCache = {} end
-  -- leaderChar stores the display name to show on the leaderboard (nil = use effective name)
+  if not LeafVE_GlobalDB.globalLeafResetAt then LeafVE_GlobalDB.globalLeafResetAt = 0 end
   if LeafVE_DB.options.groupPoints == nil then LeafVE_DB.options.groupPoints = GROUP_POINTS end
   if LeafVE_DB.options.loginPoints == nil then LeafVE_DB.options.loginPoints = 20 end
-end
-
--- Returns the effective name for the current player: the linked main character name
--- if one is set, otherwise the current character's own name.  Used to pool points
--- across alts under a single account-wide total.
-local function GetEffectiveName()
-  local me = ShortName(UnitName("player"))
-  if not me then return me end
-  if LeafVE_GlobalDB and LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[me] then
-    return LeafVE_GlobalDB.altLinks[me]
-  end
-  return me
-end
-
--- Returns the main character name for any given player name by checking both
--- the guild-wide alt links (received from other members) and local alt links.
--- Returns nil if the name is not an alt (i.e. it is already a main or unknown).
-local function GetMainForPlayer(name)
-  if not name then return nil end
-  if LeafVE_GlobalDB then
-    if LeafVE_GlobalDB.guildAltLinks and LeafVE_GlobalDB.guildAltLinks[name] then
-      return LeafVE_GlobalDB.guildAltLinks[name]
-    end
-    if LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[name] then
-      return LeafVE_GlobalDB.altLinks[name]
-    end
-  end
-  return nil
-end
-
--- Returns the display name to use on the leaderboard for the current player.
--- Honours the /lve setleaderchar setting, falling back to the effective name.
-local function GetLeaderboardName()
-  if LeafVE_GlobalDB and LeafVE_GlobalDB.leaderChar then
-    return LeafVE_GlobalDB.leaderChar
-  end
-  return GetEffectiveName()
 end
 
 function LeafVE:AddToHistory(playerName, pointType, amount, reason)
@@ -915,6 +875,7 @@ end
 -- Called by the admin UI button and by the guild broadcast handler.
 function LeafVE:HardResetLeafPoints_Local()
   EnsureDB()
+  local resetNow = time()
   LeafVE_DB.global       = {}
   LeafVE_DB.alltime      = {}
   LeafVE_DB.season       = {}
@@ -926,6 +887,9 @@ function LeafVE:HardResetLeafPoints_Local()
   LeafVE_DB.groupSessions = {}
   LeafVE_DB.groupCooldowns = {}
   LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
+  -- Record reset timestamp so offline alts on the same account are also wiped on login
+  LeafVE_DB.lastLeafResetAt = resetNow
+  if LeafVE_GlobalDB then LeafVE_GlobalDB.globalLeafResetAt = resetNow end
   -- Refresh all visible panels (handles me, leaderWeek, leaderLife, etc.)
   if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.Refresh then
     LeafVE.UI:Refresh()
@@ -1241,9 +1205,8 @@ function LeafVE:AddPoints(playerName, pointType, amount)
   if not LeafVE_DB.season[playerName] then LeafVE_DB.season[playerName] = {L = 0, G = 0, S = 0} end
   LeafVE_DB.season[playerName][pointType] = (LeafVE_DB.season[playerName][pointType] or 0) + amount
   local me = ShortName(UnitName("player"))
-  local myEffective = GetEffectiveName()
-  -- Show notification if this is the current player OR points are pooling to the current player's main
-  local isMe = me and (Lower(playerName) == Lower(me) or Lower(playerName) == Lower(myEffective or ""))
+  -- Show notification if this is the current player
+  local isMe = me and Lower(playerName) == Lower(me)
   if isMe then
     local typeNames = {L = "Login", G = "Gameplay", S = "Social"}
     if not self.suppressPointNotification then
@@ -1260,20 +1223,15 @@ function LeafVE:CheckDailyLogin()
   EnsureDB()
   local me = ShortName(UnitName("player"))
   if not me then return end
-  -- Register this character on the account
-  LeafVE_GlobalDB.registeredChars[me] = true
-  -- Award login points to the effective (main) name but track the daily check
-  -- per actual character so each alt can earn login points once per day.
-  local effectiveName = GetEffectiveName()
   local today = DayKey()
   if not LeafVE_DB.loginTracking[me] then LeafVE_DB.loginTracking[me] = {} end
   if LeafVE_DB.loginTracking[me][today] then return end
   local loginPts = 20
   -- Update login streak
-  if not LeafVE_DB.loginStreaks[effectiveName] then
-    LeafVE_DB.loginStreaks[effectiveName] = {current = 0, lastLogin = nil}
+  if not LeafVE_DB.loginStreaks[me] then
+    LeafVE_DB.loginStreaks[me] = {current = 0, lastLogin = nil}
   end
-  local streakData = LeafVE_DB.loginStreaks[effectiveName]
+  local streakData = LeafVE_DB.loginStreaks[me]
   local yesterday = DayKeyFromTS(Now() - SECONDS_PER_DAY)
   if streakData.lastLogin == yesterday then
     -- Consecutive day - increment streak
@@ -1901,51 +1859,26 @@ function LeafVE:BroadcastLeaderboardData()
   end
   
   for name, _ in pairs(knownPlayers) do
-    -- Skip alts: their points will be pooled onto the main's entry below.
-    if not GetMainForPlayer(name) then
-      -- Lifetime: prefer local alltime (direct witness), fall back to synced lboard data.
-      -- Pool any alt points onto this main entry before broadcasting.
-      -- Skip entries with no points to avoid broadcasting zeros that could
-      -- overwrite correct data held by peers (defence-in-depth alongside the
-      -- higher-total-wins guard in ReceiveLeaderboardData).
-      local lbase = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name] or {L = 0, G = 0, S = 0}
-      local lL, lG, lS = lbase.L or 0, lbase.G or 0, lbase.S or 0
-      for altName, _ in pairs(knownPlayers) do
-        local altMain = GetMainForPlayer(altName)
-        if altMain and Lower(altMain) == Lower(name) then
-          local altPts = LeafVE_DB.alltime[altName] or LeafVE_DB.lboard.alltime[altName] or {L = 0, G = 0, S = 0}
-          -- Do NOT pool L (Login) points from alts; only G and S pool
-          lG = lG + (altPts.G or 0)
-          lS = lS + (altPts.S or 0)
-        end
-      end
-      if lL + lG + lS > 0 then
-        table.insert(data, string.format("L:%s:%d:%d:%d", name, lL, lG, lS))
-      end
+    -- Lifetime: prefer local alltime (direct witness), fall back to synced lboard data.
+    -- Skip entries with no points to avoid broadcasting zeros that could
+    -- overwrite correct data held by peers (defence-in-depth alongside the
+    -- higher-total-wins guard in ReceiveLeaderboardData).
+    local lbase = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name] or {L = 0, G = 0, S = 0}
+    local lL, lG, lS = lbase.L or 0, lbase.G or 0, lbase.S or 0
+    if lL + lG + lS > 0 then
+      table.insert(data, string.format("L:%s:%d:%d:%d", name, lL, lG, lS))
+    end
 
-      -- Weekly: prefer local aggregation, fall back to synced weekly data.
-      -- Pool any alt weekly points onto this main entry before broadcasting.
-      -- Skip entries with no points to avoid broadcasting zeros that could
-      -- overwrite correct data held by peers (defence-in-depth alongside the
-      -- higher-total-wins guard in ReceiveLeaderboardData).
-      local wbase = weekAgg[name] or syncedWeek[name]
-      local wL = wbase and (wbase.L or 0) or 0
-      local wG = wbase and (wbase.G or 0) or 0
-      local wS = wbase and (wbase.S or 0) or 0
-      for altName, _ in pairs(knownPlayers) do
-        local altMain = GetMainForPlayer(altName)
-        if altMain and Lower(altMain) == Lower(name) then
-          local altWpts = weekAgg[altName] or syncedWeek[altName]
-          if altWpts then
-            -- Do NOT pool L (Login) points from alts; only G and S pool
-            wG = wG + (altWpts.G or 0)
-            wS = wS + (altWpts.S or 0)
-          end
-        end
-      end
-      if wL + wG + wS > 0 then
-        table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, name, wL, wG, wS))
-      end
+    -- Weekly: prefer local aggregation, fall back to synced weekly data.
+    -- Skip entries with no points to avoid broadcasting zeros that could
+    -- overwrite correct data held by peers (defence-in-depth alongside the
+    -- higher-total-wins guard in ReceiveLeaderboardData).
+    local wbase = weekAgg[name] or syncedWeek[name]
+    local wL = wbase and (wbase.L or 0) or 0
+    local wG = wbase and (wbase.G or 0) or 0
+    local wS = wbase and (wbase.S or 0) or 0
+    if wL + wG + wS > 0 then
+      table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, name, wL, wG, wS))
     end
   end
   
@@ -2620,25 +2553,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
   -- Handle admin config broadcast
   elseif string.sub(message, 1, 17) == "LVE_ADMIN_CONFIG:" then
     -- No longer used; configurable admin settings have been removed.
-    return
-
-  -- Handle alt-main link broadcast from a guild member
-  elseif string.sub(message, 1, 8) == "ALTLINK:" then
-    local rest = string.sub(message, 9)
-    -- Format: "ALTLINK:altName:mainName"  or  "ALTLINK:altName:" (unlink)
-    local colonPos = string.find(rest, ":")
-    if colonPos then
-      local altName  = string.sub(rest, 1, colonPos - 1)
-      local mainName = string.sub(rest, colonPos + 1)
-      EnsureDB()
-      if altName ~= "" then
-        if mainName ~= "" then
-          LeafVE_GlobalDB.guildAltLinks[altName] = mainName
-        else
-          LeafVE_GlobalDB.guildAltLinks[altName] = nil
-        end
-      end
-    end
     return
 
   -- Handle achievement data sync from a guild member
@@ -5521,16 +5435,6 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     memberSet[lowerName] = info
   end
 
-  -- Pre-build alt→mains lookup to avoid O(n²) nested loops below
-  local altsByMain = {}
-  for _, altInfo in pairs(memberSet) do
-    local altMain = GetMainForPlayer(altInfo.name)
-    if altMain then
-      local mainLower = Lower(altMain)
-      if not altsByMain[mainLower] then altsByMain[mainLower] = {} end
-      table.insert(altsByMain[mainLower], altInfo)
-    end
-  end
 
   if isWeekly then
     -- Use the higher of local aggregation and synced weekly data so that stale
@@ -5541,96 +5445,52 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     
     for _, guildInfo in pairs(memberSet) do
       local name = guildInfo.name
-      -- Skip alts: they will be pooled onto the main's entry
-      if not GetMainForPlayer(name) then
-        local pts
-        local localPts = localWeek[name]
-        local syncedPts = syncedWeek and syncedWeek[name]
-        if localPts and syncedPts then
-          local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-          local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-          pts = localTotal >= syncedTotal and localPts or syncedPts
-        elseif localPts then
-          pts = localPts
-        else
-          pts = syncedPts or {L = 0, G = 0, S = 0}
-        end
-        local totL = pts.L or 0
-        local totG = pts.G or 0
-        local totS = pts.S or 0
-        -- Add alt points for any alt that maps to this main
-        for _, altInfo in pairs(altsByMain[Lower(name)] or {}) do
-          local altName = altInfo.name
-          local altLocalPts = localWeek[altName]
-          local altSyncedPts = syncedWeek and syncedWeek[altName]
-          local altPts
-          if altLocalPts and altSyncedPts then
-            local alocTotal = (altLocalPts.L or 0) + (altLocalPts.G or 0) + (altLocalPts.S or 0)
-            local asncTotal = (altSyncedPts.L or 0) + (altSyncedPts.G or 0) + (altSyncedPts.S or 0)
-            altPts = alocTotal >= asncTotal and altLocalPts or altSyncedPts
-          elseif altLocalPts then
-            altPts = altLocalPts
-          else
-            altPts = altSyncedPts or {L = 0, G = 0, S = 0}
-          end
-          -- Do NOT pool L (Login) points from alts; only G and S pool
-          totG = totG + (altPts.G or 0)
-          totS = totS + (altPts.S or 0)
-        end
-        local total = totL + totG + totS
-        table.insert(leaders, {
-          name = name, total = total,
-          L = totL, G = totG, S = totS,
-          class = guildInfo.class or "Unknown"
-        })
+      local pts
+      local localPts = localWeek[name]
+      local syncedPts = syncedWeek and syncedWeek[name]
+      if localPts and syncedPts then
+        local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
+        local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
+        pts = localTotal >= syncedTotal and localPts or syncedPts
+      elseif localPts then
+        pts = localPts
+      else
+        pts = syncedPts or {L = 0, G = 0, S = 0}
       end
+      local totL = pts.L or 0
+      local totG = pts.G or 0
+      local totS = pts.S or 0
+      local total = totL + totG + totS
+      table.insert(leaders, {
+        name = name, total = total,
+        L = totL, G = totG, S = totS,
+        class = guildInfo.class or "Unknown"
+      })
     end
   else
     for _, guildInfo in pairs(memberSet) do
       local name = guildInfo.name
-      -- Skip alts: they will be pooled onto the main's entry
-      if not GetMainForPlayer(name) then
-        local pts
-        local localPts = LeafVE_DB.alltime[name]
-        local syncedPts = LeafVE_DB.lboard.alltime[name]
-        if localPts and syncedPts then
-          local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-          local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-          pts = localTotal >= syncedTotal and localPts or syncedPts
-        elseif localPts then
-          pts = localPts
-        else
-          pts = syncedPts or {L = 0, G = 0, S = 0}
-        end
-        local totL = pts.L or 0
-        local totG = pts.G or 0
-        local totS = pts.S or 0
-        -- Add alt points for any alt that maps to this main
-        for _, altInfo in pairs(altsByMain[Lower(name)] or {}) do
-          local altName = altInfo.name
-          local altLocalPts = LeafVE_DB.alltime[altName]
-          local altSyncedPts = LeafVE_DB.lboard.alltime[altName]
-          local altPts
-          if altLocalPts and altSyncedPts then
-            local alocTotal = (altLocalPts.L or 0) + (altLocalPts.G or 0) + (altLocalPts.S or 0)
-            local asncTotal = (altSyncedPts.L or 0) + (altSyncedPts.G or 0) + (altSyncedPts.S or 0)
-            altPts = alocTotal >= asncTotal and altLocalPts or altSyncedPts
-          elseif altLocalPts then
-            altPts = altLocalPts
-          else
-            altPts = altSyncedPts or {L = 0, G = 0, S = 0}
-          end
-          -- Do NOT pool L (Login) points from alts; only G and S pool
-          totG = totG + (altPts.G or 0)
-          totS = totS + (altPts.S or 0)
-        end
-        local total = totL + totG + totS
-        table.insert(leaders, {
-          name = name, total = total,
-          L = totL, G = totG, S = totS,
-          class = guildInfo.class or "Unknown"
-        })
+      local pts
+      local localPts = LeafVE_DB.alltime[name]
+      local syncedPts = LeafVE_DB.lboard.alltime[name]
+      if localPts and syncedPts then
+        local localTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
+        local syncedTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
+        pts = localTotal >= syncedTotal and localPts or syncedPts
+      elseif localPts then
+        pts = localPts
+      else
+        pts = syncedPts or {L = 0, G = 0, S = 0}
       end
+      local totL = pts.L or 0
+      local totG = pts.G or 0
+      local totS = pts.S or 0
+      local total = totL + totG + totS
+      table.insert(leaders, {
+        name = name, total = total,
+        L = totL, G = totG, S = totS,
+        class = guildInfo.class or "Unknown"
+      })
     end
   end
   
@@ -6969,430 +6829,8 @@ local function BuildAdminPanel(panel)
   UpdateAdminScroll()
 end
 
-local function BuildAltsPanel(panel)
-  local headerBG = panel:CreateTexture(nil, "BACKGROUND")
-  headerBG:SetPoint("TOP", panel, "TOP", -15, -10)
-  headerBG:SetWidth(420)
-  headerBG:SetHeight(50)
-  headerBG:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  headerBG:SetVertexColor(0.15, 0.15, 0.18, 0.9)
 
-  local accentTop = panel:CreateTexture(nil, "BORDER")
-  accentTop:SetPoint("TOPLEFT", headerBG, "TOPLEFT", 0, 0)
-  accentTop:SetPoint("TOPRIGHT", headerBG, "TOPRIGHT", 0, 0)
-  accentTop:SetHeight(3)
-  accentTop:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  accentTop:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1)
-
-  local h = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-  h:SetPoint("TOP", headerBG, "TOP", 0, -10)
-  h:SetText("|cFFFFD700Characters & Alts|r")
-
-  local subtitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  subtitle:SetPoint("TOP", h, "BOTTOM", 0, -3)
-  subtitle:SetText("|cFF888888Pool Leaf Points across all your characters|r")
-
-  -- Scrollable content area
-  local scrollFrame = CreateFrame("ScrollFrame", nil, panel)
-  scrollFrame:SetPoint("TOPLEFT",     panel, "TOPLEFT",      0, -68)
-  scrollFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -20, 10)
-  scrollFrame:EnableMouseWheel(true)
-
-  local scrollBar
-  scrollFrame:SetScript("OnMouseWheel", function()
-    local cur = scrollFrame:GetVerticalScroll()
-    local max = scrollFrame:GetVerticalScrollRange()
-    local new = cur - (arg1 * 30)
-    if new < 0 then new = 0 end
-    if new > max then new = max end
-    scrollFrame:SetVerticalScroll(new)
-    scrollBar:SetValue(new)
-  end)
-
-  scrollBar = CreateFrame("Slider", nil, panel)
-  scrollBar:SetPoint("TOPRIGHT",    panel, "TOPRIGHT",    -4, -68)
-  scrollBar:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -4, 10)
-  scrollBar:SetWidth(14)
-  scrollBar:SetOrientation("VERTICAL")
-  scrollBar:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
-  scrollBar:SetMinMaxValues(0, 1)
-  scrollBar:SetValue(0)
-  scrollBar:SetScript("OnValueChanged", function()
-    scrollFrame:SetVerticalScroll(this:GetValue())
-  end)
-
-  local subFrame = CreateFrame("Frame", nil, scrollFrame)
-  subFrame:SetWidth(440)
-  subFrame:SetHeight(1)
-  scrollFrame:SetScrollChild(subFrame)
-
-  local yBase = -10
-
-  -- Section: How it works
-  local infoLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  infoLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  infoLabel:SetText("|cFF2DD35CHow It Works|r")
-  yBase = yBase - 22
-
-  local infoLines = {
-    "Link alts to a main character to pool Gameplay (G) and Social (S)",
-    "points together. Login (L) points are tracked per character.",
-    "Daily login and shoutout caps are shared across linked characters.",
-    "Use |cFFFFD700/lve setleaderchar Name|r to choose which name shows on",
-    "the leaderboard.",
-  }
-  for _, line in ipairs(infoLines) do
-    local lbl = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    lbl:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-    lbl:SetWidth(400)
-    lbl:SetJustifyH("LEFT")
-    lbl:SetText(line)
-    lbl:SetTextColor(0.75, 0.75, 0.75)
-    yBase = yBase - 18
-  end
-  yBase = yBase - 6
-
-  -- Section: Current Status
-  local div1 = subFrame:CreateTexture(nil, "ARTWORK")
-  div1:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  div1:SetWidth(420)
-  div1:SetHeight(1)
-  div1:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  div1:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
-  yBase = yBase - 14
-
-  local statusLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  statusLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  statusLabel:SetText("|cFF2DD35CCurrent Character Status|r")
-  yBase = yBase - 22
-
-  local currentCharLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  currentCharLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  currentCharLabel:SetWidth(400)
-  currentCharLabel:SetJustifyH("LEFT")
-  currentCharLabel:SetText("Loading...")
-  panel.altsCurrentCharLabel = currentCharLabel
-  yBase = yBase - 18
-
-  local linkedToLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  linkedToLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  linkedToLabel:SetWidth(400)
-  linkedToLabel:SetJustifyH("LEFT")
-  linkedToLabel:SetText("")
-  panel.altsLinkedToLabel = linkedToLabel
-  yBase = yBase - 18
-
-  local leaderCharLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  leaderCharLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  leaderCharLabel:SetWidth(400)
-  leaderCharLabel:SetJustifyH("LEFT")
-  leaderCharLabel:SetText("")
-  panel.altsLeaderCharLabel = leaderCharLabel
-  yBase = yBase - 26
-
-  -- Section: Link / Unlink controls
-  local div2 = subFrame:CreateTexture(nil, "ARTWORK")
-  div2:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  div2:SetWidth(420)
-  div2:SetHeight(1)
-  div2:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  div2:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
-  yBase = yBase - 14
-
-  local ctrlLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  ctrlLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  ctrlLabel:SetText("|cFF2DD35CLink to Main Character|r")
-  yBase = yBase - 26
-
-  -- EditBox: main name input
-  local inputBG = CreateFrame("Frame", nil, subFrame)
-  inputBG:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  inputBG:SetWidth(200)
-  inputBG:SetHeight(24)
-  inputBG:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 10,
-    insets = {left = 3, right = 3, top = 3, bottom = 3}
-  })
-  inputBG:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
-  inputBG:SetBackdropBorderColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 0.6)
-
-  local mainInput = CreateFrame("EditBox", nil, inputBG)
-  mainInput:SetPoint("TOPLEFT", inputBG, "TOPLEFT", 6, -5)
-  mainInput:SetWidth(185)
-  mainInput:SetHeight(16)
-  mainInput:SetAutoFocus(false)
-  mainInput:SetFontObject(GameFontHighlightSmall)
-  mainInput:SetMaxLetters(48)
-  mainInput:SetScript("OnEscapePressed", function() this:ClearFocus() end)
-  local mainInputPlaceholder = inputBG:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  mainInputPlaceholder:SetPoint("TOPLEFT", inputBG, "TOPLEFT", 8, -5)
-  mainInputPlaceholder:SetText("|cFF555555Main character name...|r")
-  panel.altsMainInput = mainInput
-  panel.altsMainInputPlaceholder = mainInputPlaceholder
-  mainInput:SetScript("OnTextChanged", function()
-    if mainInput:GetText() == "" then
-      mainInputPlaceholder:Show()
-    else
-      mainInputPlaceholder:Hide()
-    end
-  end)
-
-  local linkBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
-  linkBtn:SetWidth(80)
-  linkBtn:SetHeight(24)
-  linkBtn:SetPoint("LEFT", inputBG, "RIGHT", 8, 0)
-  linkBtn:SetText("Link Main")
-  SkinButtonAccent(linkBtn)
-  linkBtn:SetScript("OnClick", function()
-    local mainName = Trim(mainInput:GetText() or "")
-    if mainName == "" then
-      Print("Enter the main character name first.")
-      return
-    end
-    EnsureDB()
-    local me = ShortName(UnitName("player"))
-    if not me then return end
-    if Lower(me) == Lower(mainName) then
-      Print("You cannot link a character to itself.")
-      return
-    end
-    LeafVE_GlobalDB.altLinks[me] = mainName
-    LeafVE_GlobalDB.registeredChars[me] = true
-    mainInput:SetText("")
-    mainInputPlaceholder:Show()
-    if InGuild() then
-      SendAddonMessage("LeafVE", "ALTLINK:"..me..":"..mainName, "GUILD")
-    end
-    Print(string.format("|cFF2DD35C%s|r linked to main |cFFFFD700%s|r.", me, mainName))
-    LeafVE.UI:RefreshAlts()
-  end)
-
-  yBase = yBase - 34
-
-  local unlinkBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
-  unlinkBtn:SetWidth(110)
-  unlinkBtn:SetHeight(24)
-  unlinkBtn:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  unlinkBtn:SetText("Unlink Main")
-  SkinButtonAccent(unlinkBtn)
-  unlinkBtn:SetScript("OnClick", function()
-    EnsureDB()
-    local me = ShortName(UnitName("player"))
-    if not me then return end
-    if LeafVE_GlobalDB.altLinks[me] then
-      local oldMain = LeafVE_GlobalDB.altLinks[me]
-      LeafVE_GlobalDB.altLinks[me] = nil
-      if InGuild() then
-        SendAddonMessage("LeafVE", "ALTLINK:"..me..":", "GUILD")
-      end
-      Print(string.format("|cFF2DD35C%s|r unlinked from |cFFFFD700%s|r.", me, oldMain))
-    else
-      Print("This character is not linked to any main.")
-    end
-    LeafVE.UI:RefreshAlts()
-  end)
-
-  yBase = yBase - 40
-
-  -- Section: Leaderboard display name
-  local div3 = subFrame:CreateTexture(nil, "ARTWORK")
-  div3:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  div3:SetWidth(420)
-  div3:SetHeight(1)
-  div3:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  div3:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
-  yBase = yBase - 14
-
-  local lbLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  lbLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  lbLabel:SetText("|cFF2DD35CLeaderboard Display Name|r")
-  yBase = yBase - 26
-
-  local lbHint = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  lbHint:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  lbHint:SetWidth(400)
-  lbHint:SetJustifyH("LEFT")
-  lbHint:SetText("|cFF888888Choose which character name appears on the leaderboard.|r")
-  yBase = yBase - 22
-
-  local lbInputBG = CreateFrame("Frame", nil, subFrame)
-  lbInputBG:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-  lbInputBG:SetWidth(200)
-  lbInputBG:SetHeight(24)
-  lbInputBG:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 10,
-    insets = {left = 3, right = 3, top = 3, bottom = 3}
-  })
-  lbInputBG:SetBackdropColor(0.05, 0.05, 0.08, 0.95)
-  lbInputBG:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.6)
-
-  local lbInput = CreateFrame("EditBox", nil, lbInputBG)
-  lbInput:SetPoint("TOPLEFT", lbInputBG, "TOPLEFT", 6, -5)
-  lbInput:SetWidth(185)
-  lbInput:SetHeight(16)
-  lbInput:SetAutoFocus(false)
-  lbInput:SetFontObject(GameFontHighlightSmall)
-  lbInput:SetMaxLetters(48)
-  lbInput:SetScript("OnEscapePressed", function() this:ClearFocus() end)
-  panel.altsLbInput = lbInput
-
-  local lbSetBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
-  lbSetBtn:SetWidth(90)
-  lbSetBtn:SetHeight(24)
-  lbSetBtn:SetPoint("LEFT", lbInputBG, "RIGHT", 8, 0)
-  lbSetBtn:SetText("Set Name")
-  SkinButtonAccent(lbSetBtn)
-  lbSetBtn:SetScript("OnClick", function()
-    local charName = Trim(lbInput:GetText() or "")
-    if charName == "" then
-      Print("Enter the character name to show on the leaderboard.")
-      return
-    end
-    EnsureDB()
-    LeafVE_GlobalDB.leaderChar = charName
-    Print(string.format("Leaderboard display name set to |cFFFFD700%s|r.", charName))
-    LeafVE.UI:RefreshAlts()
-  end)
-
-  local lbClearBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
-  lbClearBtn:SetWidth(60)
-  lbClearBtn:SetHeight(24)
-  lbClearBtn:SetPoint("LEFT", lbSetBtn, "RIGHT", 6, 0)
-  lbClearBtn:SetText("Clear")
-  SkinButtonAccent(lbClearBtn)
-  lbClearBtn:SetScript("OnClick", function()
-    EnsureDB()
-    LeafVE_GlobalDB.leaderChar = nil
-    lbInput:SetText("")
-    Print("Leaderboard display name cleared (using effective name).")
-    LeafVE.UI:RefreshAlts()
-  end)
-
-  yBase = yBase - 40
-
-  -- Section: Registered Characters list
-  local div4 = subFrame:CreateTexture(nil, "ARTWORK")
-  div4:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  div4:SetWidth(420)
-  div4:SetHeight(1)
-  div4:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
-  div4:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.4)
-  yBase = yBase - 14
-
-  local regLabel = subFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  regLabel:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
-  regLabel:SetText("|cFF2DD35CRegistered Characters on this Account|r")
-  yBase = yBase - 22
-
-  panel.altsCharListFrame = subFrame
-  panel.altsCharListYBase = yBase
-  panel.altsCharEntries = {}
-
-  local totalHeight = math.abs(yBase) + 200  -- will be updated in Refresh
-  subFrame:SetHeight(totalHeight)
-
-  -- Update scrollbar range
-  local function UpdateScroll()
-    local max = scrollFrame:GetVerticalScrollRange()
-    scrollBar:SetMinMaxValues(0, max > 0 and max or 1)
-  end
-  panel.altsUpdateScroll = UpdateScroll
-end
-
-function LeafVE.UI:RefreshAlts()
-  EnsureDB()
-  if not self.panels or not self.panels.alts then return end
-  local panel = self.panels.alts
-
-  local me = ShortName(UnitName("player"))
-  local effectiveName = GetEffectiveName()
-
-  -- Update current character status
-  if panel.altsCurrentCharLabel then
-    panel.altsCurrentCharLabel:SetText("Current character: |cFFFFD700"..(me or "?").."|r")
-  end
-  if panel.altsLinkedToLabel then
-    if LeafVE_GlobalDB.altLinks and me and LeafVE_GlobalDB.altLinks[me] then
-      panel.altsLinkedToLabel:SetText("Linked main: |cFF2DD35C"..LeafVE_GlobalDB.altLinks[me].."|r  (points pool to main)")
-    else
-      panel.altsLinkedToLabel:SetText("|cFF888888Not linked – this character is standalone.|r")
-    end
-  end
-  if panel.altsLeaderCharLabel then
-    if LeafVE_GlobalDB.leaderChar then
-      panel.altsLeaderCharLabel:SetText("Leaderboard name: |cFFFFD700"..LeafVE_GlobalDB.leaderChar.."|r")
-    else
-      panel.altsLeaderCharLabel:SetText("Leaderboard name: |cFF888888(using effective name: "..(effectiveName or "?")..")|r")
-    end
-  end
-
-  -- Pre-fill leaderboard input with current value
-  if panel.altsLbInput then
-    if LeafVE_GlobalDB.leaderChar then
-      panel.altsLbInput:SetText(LeafVE_GlobalDB.leaderChar)
-    end
-  end
-
-  -- Rebuild character list
-  if not panel.altsCharListFrame then return end
-  local subFrame = panel.altsCharListFrame
-  local yBase = panel.altsCharListYBase
-
-  -- Hide old entries
-  for i = 1, table.getn(panel.altsCharEntries) do
-    panel.altsCharEntries[i]:Hide()
-  end
-
-  -- Build sorted list
-  local chars = {}
-  for charName, _ in pairs(LeafVE_GlobalDB.registeredChars) do
-    table.insert(chars, charName)
-  end
-  table.sort(chars, function(a, b) return Lower(a) < Lower(b) end)
-
-  for i = 1, table.getn(chars) do
-    local charName = chars[i]
-    local entry = panel.altsCharEntries[i]
-    if not entry then
-      entry = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-      entry:SetWidth(400)
-      entry:SetJustifyH("LEFT")
-      table.insert(panel.altsCharEntries, entry)
-    end
-    entry:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, yBase)
-    local linked = LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[charName]
-    local suffix = ""
-    if linked then
-      suffix = "  |cFF888888→ main: |cFF2DD35C"..linked.."|r"
-    end
-    if me and Lower(charName) == Lower(me) then
-      suffix = suffix.."  |cFF2DD35C◄ current|r"
-    end
-    entry:SetText("|cFFFFD700"..charName.."|r"..suffix)
-    entry:Show()
-    yBase = yBase - 20
-  end
-
-  if table.getn(chars) == 0 then
-    if not panel.altsNoCharsText then
-      panel.altsNoCharsText = subFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-      panel.altsNoCharsText:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 18, panel.altsCharListYBase)
-      panel.altsNoCharsText:SetWidth(400)
-      panel.altsNoCharsText:SetJustifyH("LEFT")
-      panel.altsNoCharsText:SetText("|cFF888888No characters registered yet. Log in on each alt to register it.|r")
-    end
-    panel.altsNoCharsText:Show()
-  elseif panel.altsNoCharsText then
-    panel.altsNoCharsText:Hide()
-  end
-
-  subFrame:SetHeight(math.abs(yBase) + 20)
-  if panel.altsUpdateScroll then panel.altsUpdateScroll() end
-end
+local function BuildJoinPanel
 
 local function BuildJoinPanel(panel)
   local joinText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -7588,9 +7026,6 @@ local function BuildWelcomePanel(panel)
   AddLine("|cFF00CCFF/lboardreq|r              - Request leaderboard sync")
   AddLine("|cFF00CCFF/badgesync|r              - Broadcast your badges")
   AddLine("|cFF00CCFF/lvedebug points|r        - Show your current points")
-  AddLine("|cFF00CCFF/lve linkmain Name|r      - Link this alt to a main")
-  AddLine("|cFF00CCFF/lve unlinkmain|r         - Remove main link")
-  AddLine("|cFF00CCFF/lve listchars|r          - List registered characters")
   yOffset = yOffset - 6
   AddDivider()
 
@@ -8425,12 +7860,8 @@ function LeafVE.UI:Build()
   self.tabBadges:SetPoint("LEFT", self.tabAchievements, "RIGHT", 4, 0)
   self.tabBadges:SetWidth(65)
 
-  self.tabAlts = TabButton(f, "Alts", "LeafVE_TabAlts")
-  self.tabAlts:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
-  self.tabAlts:SetWidth(40)
-
   self.tabHistory = TabButton(f, "History", "LeafVE_TabHistory")
-  self.tabHistory:SetPoint("LEFT", self.tabAlts, "RIGHT", 4, 0)
+  self.tabHistory:SetPoint("LEFT", self.tabBadges, "RIGHT", 4, 0)
   self.tabHistory:SetWidth(60)
 
   self.tabLiveHistory = TabButton(f, "Live History", "LeafVE_TabLiveHistory")
@@ -8506,10 +7937,6 @@ function LeafVE.UI:Build()
   self.panels.admin:SetAllPoints(self.left)
   BuildAdminPanel(self.panels.admin)
 
-  self.panels.alts = CreateFrame("Frame", nil, self.left)
-  self.panels.alts:SetAllPoints(self.left)
-  BuildAltsPanel(self.panels.alts)
-
   self.panels.liveHistory = CreateFrame("Frame", nil, self.left)
   self.panels.liveHistory:SetAllPoints(self.left)
   BuildLiveHistoryPanel(self.panels.liveHistory)
@@ -8568,11 +7995,6 @@ function LeafVE.UI:Build()
     self:Refresh()
   end)
 
-  self.tabAlts:SetScript("OnClick", function()
-    self.activeTab = "alts"
-    self:Refresh()
-  end)
-
   self.tabLiveHistory:SetScript("OnClick", function()
     self.activeTab = "liveHistory"
     self:Refresh()
@@ -8600,7 +8022,6 @@ function LeafVE.UI:Build()
   self.panels.achievements:Hide()
   self.panels.options:Hide()
   self.panels.admin:Hide()
-  self.panels.alts:Hide()
   self.panels.liveHistory:Hide()
   self.panels.welcome:Hide()
   self.panels.join:Hide()
@@ -8636,7 +8057,7 @@ function LeafVE.UI:Refresh()
     self.activeTab = "me"
   end
 
-  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabAlts, self.tabHistory, self.tabLiveHistory, self.tabOptions}
+  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabHistory, self.tabLiveHistory, self.tabOptions}
   if hasAccess then
     for _, tab in ipairs(accessTabs) do
       if tab then tab:Show() end
@@ -8676,7 +8097,7 @@ function LeafVE.UI:Refresh()
   end
   
   -- Hide all panels safely
-  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "alts", "liveHistory", "welcome", "join"}
+  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "liveHistory", "welcome", "join"}
   for _, name in ipairs(panelNames) do
     if self.panels[name] and self.panels[name].Hide then
       self.panels[name]:Hide()
@@ -8952,10 +8373,6 @@ function LeafVE.UI:Refresh()
       if self.panels.me then self.panels.me:Show() end
     end
 
-  elseif self.activeTab == "alts" and self.panels.alts then
-    self.panels.alts:Show()
-    self:RefreshAlts()
-
   elseif self.activeTab == "liveHistory" and self.panels.liveHistory then
     self.panels.liveHistory:Show()
     self:RefreshLiveHistory()
@@ -9181,11 +8598,6 @@ ef:SetScript("OnEvent", function()
     Print("Auto-tracking: Login & Group points enabled!")
     EnsureDB()
     LeafVE:RecordActivity()
-    -- Register this character in the account-wide roster
-    local me = ShortName(UnitName("player"))
-    if me then
-      LeafVE_GlobalDB.registeredChars[me] = true
-    end
     -- One-time migration: purge old "Quest area trigger" history entries
     if not LeafVE_DB.migratedTriggerHistory then
       EnsureDB()
@@ -9203,6 +8615,11 @@ ef:SetScript("OnEvent", function()
         end
       end
       LeafVE_DB.migratedTriggerHistory = true
+    end
+    -- Apply any pending admin reset that occurred while this character was offline
+    if (LeafVE_GlobalDB.globalLeafResetAt or 0) > (LeafVE_DB.lastLeafResetAt or 0) then
+      LeafVE:HardResetLeafPoints_Local()
+      Print("|cFFFF4444Leaf Points were reset by an admin while you were offline. Your data has been wiped.|r")
     end
     LeafVE:CheckDailyLogin()
     LeafVE:PurgeStaleWeeklyData()
@@ -9228,10 +8645,6 @@ ef:SetScript("OnEvent", function()
           local bme = ShortName(UnitName("player"))
           if bme and LeafVE_GlobalDB.playerNotes and LeafVE_GlobalDB.playerNotes[bme] then
             LeafVE:BroadcastPlayerNote(LeafVE_GlobalDB.playerNotes[bme])
-          end
-          -- Broadcast our alt link so guildies can merge leaderboard entries
-          if bme and LeafVE_GlobalDB.altLinks and LeafVE_GlobalDB.altLinks[bme] then
-            SendAddonMessage("LeafVE", "ALTLINK:"..bme..":"..LeafVE_GlobalDB.altLinks[bme], "GUILD")
           end
           -- Broadcast gear so guildmates can cache it
           LeafVE.lastGearBroadcast = 0  -- bypass throttle for login broadcast
@@ -9480,80 +8893,6 @@ SlashCmdList["LEAFVE"] = function(msg)
     end
     LeafVE.UI = { activeTab = "me" }
     LeafVE:ToggleUI()
-
-  elseif string.sub(trimmedMsg, 1, 9) == "linkmain " then
-    -- /lve linkmain CharName  — link current character to a main
-    local mainName = Trim(string.sub(msg, string.len("linkmain ") + 1))
-    if mainName == "" then
-      Print("Usage: /lve linkmain CharName")
-    else
-      EnsureDB()
-      local me = ShortName(UnitName("player"))
-      if not me then Print("Error: could not determine your character name.") return end
-      if Lower(me) == Lower(mainName) then
-        Print("You cannot link a character to itself.")
-        return
-      end
-      LeafVE_GlobalDB.altLinks[me] = mainName
-      LeafVE_GlobalDB.registeredChars[me] = true
-      Print(string.format("|cFF2DD35C%s|r is now linked to main |cFFFFD700%s|r. Points will pool together.", me, mainName))
-      if InGuild() then
-        SendAddonMessage("LeafVE", "ALTLINK:"..me..":"..mainName, "GUILD")
-      end
-    end
-
-  elseif trimmedMsg == "unlinkmain" then
-    -- /lve unlinkmain  — remove link, make character standalone again
-    EnsureDB()
-    local me = ShortName(UnitName("player"))
-    if not me then Print("Error: could not determine your character name.") return end
-    if LeafVE_GlobalDB.altLinks[me] then
-      local oldMain = LeafVE_GlobalDB.altLinks[me]
-      LeafVE_GlobalDB.altLinks[me] = nil
-      Print(string.format("|cFF2DD35C%s|r is now standalone (was linked to |cFFFFD700%s|r).", me, oldMain))
-      if InGuild() then
-        SendAddonMessage("LeafVE", "ALTLINK:"..me..":", "GUILD")
-      end
-    else
-      Print("This character is not linked to any main.")
-    end
-
-  elseif string.sub(trimmedMsg, 1, 14) == "setleaderchar " then
-    -- /lve setleaderchar CharName  — set which character name shows on leaderboard
-    local charName = Trim(string.sub(msg, string.len("setleaderchar ") + 1))
-    if charName == "" then
-      Print("Usage: /lve setleaderchar CharName")
-    else
-      EnsureDB()
-      LeafVE_GlobalDB.leaderChar = charName
-      Print(string.format("Leaderboard display name set to |cFFFFD700%s|r.", charName))
-    end
-
-  elseif trimmedMsg == "listchars" then
-    -- /lve listchars  — list all registered characters on this account
-    EnsureDB()
-    local me = ShortName(UnitName("player"))
-    local effectiveName = GetEffectiveName()
-    Print("|cFFFFD700Registered characters on this account:|r")
-    local found = false
-    for charName, _ in pairs(LeafVE_GlobalDB.registeredChars) do
-      found = true
-      local suffix = ""
-      if LeafVE_GlobalDB.altLinks[charName] then
-        suffix = " |cFF888888→ main: "..LeafVE_GlobalDB.altLinks[charName].."|r"
-      end
-      if me and Lower(charName) == Lower(me) then
-        suffix = suffix.." |cFF2DD35C(current)|r"
-      end
-      Print("  "..charName..suffix)
-    end
-    if not found then
-      Print("  |cFF888888No characters registered yet.|r")
-    end
-    if LeafVE_GlobalDB.leaderChar then
-      Print("Leaderboard display name: |cFFFFD700"..LeafVE_GlobalDB.leaderChar.."|r")
-    end
-    Print("Effective name (points pool): |cFFFFD700"..tostring(effectiveName).."|r")
 
   else
     LeafVE:ToggleUI()

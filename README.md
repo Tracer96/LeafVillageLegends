@@ -18,7 +18,6 @@ The Leaf Village Legends addon transforms our guild experience by tracking membe
   - **S (Social)** — Earned from shoutouts and guild social interactions.
 - **Hard-coded 700 daily LP cap** across all point types combined.
 - **AFK detection** — Group points are not awarded when you are AFK or inactive for 10+ minutes.
-- **Alt character pooling** — Link alt characters to a main so Gameplay and Social points accumulate on one identity. Login points remain per-character.
 
 ### 🎖️ Badge Collection
 Over 20 collectible badges across 6 categories, each with WoW-style quality tiers:
@@ -125,7 +124,6 @@ The main window provides tabbed navigation:
 | **Lifetime** | All-time Leaf Points rankings |
 | **Achievements** | Achievement leaderboard and tracking |
 | **Badges** | Full badge collection with progress |
-| **Alts** | Link alt characters to your main |
 | **History** | Point earning history log |
 | **Live History** | Real-time point history feed for all members |
 | **Options** | Notification and display settings |
