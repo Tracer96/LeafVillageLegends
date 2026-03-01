@@ -20,11 +20,11 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "10.8"
+LeafVE.version = "11.1"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
-LeafVE.minCompatVersion = "10.8"
+LeafVE.minCompatVersion = "11.1"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
@@ -63,9 +63,9 @@ local INSTANCE_MIN_PRESENCE_PCT = 0.5  -- must be present for ≥50% of run time
 local INSTANCE_MAX_DAILY = 20
 local QUEST_POINTS = 10
 local QUEST_MAX_DAILY = 0
-local LEAF_POINT_DAILY_CAP = 700
-local GROUP_POINTS = 10               -- points awarded per guild group tick
-local GROUP_POINTS_DAILY_CAP = 0      -- no separate group cap; global daily cap applies
+local LEAF_POINT_DAILY_CAP = 0
+local GROUP_POINTS = 5                -- points awarded per guild group tick per guildie
+local GROUP_POINTS_DAILY_CAP = 500    -- daily cap for group tick points only
 
 local SEASON_REWARD_1 = 10
 local SEASON_REWARD_2 = 5
@@ -1468,7 +1468,19 @@ function LeafVE:OnGroupUpdate()
         todayData.date = today
         todayData.earned = 0
       end
+      if GROUP_POINTS_DAILY_CAP ~= 0 then
+        local earned = todayData.earned or 0
+        if earned >= GROUP_POINTS_DAILY_CAP then
+          self.lastGroupAwardTick = currentTick
+          Print(string.format("|cFFFF4444Group points skipped — daily group cap of %d LP reached!|r", GROUP_POINTS_DAILY_CAP))
+          return
+        end
+      end
       local points = pointsPerGuildie * numGuildies
+      if GROUP_POINTS_DAILY_CAP ~= 0 then
+        local remaining = GROUP_POINTS_DAILY_CAP - (todayData.earned or 0)
+        if points > remaining then points = remaining end
+      end
       local awarded = self:AddPoints(playerName, "G", points)
       if awarded and awarded > 0 then
         todayData.earned = (todayData.earned or 0) + awarded
@@ -3989,15 +4001,19 @@ function LeafVE.UI:ShowPlayerCard(playerName)
   local useModel = unitToken ~= nil
   
   if useModel then
-    self.cardModel:Show()
-    self.cardClassIconFrame:Hide()
-    self.cardModel:ClearModel()
-    self.cardModel:SetCamera(0)
-    pcall(function()
+    local modelOk = pcall(function()
+      self.cardModel:ClearModel()
+      self.cardModel:SetCamera(0)
       self.cardModel:SetUnit(unitToken)
       self.cardModel:SetPosition(0, 0, 0)
       self.cardModel:SetFacing(0.5)
     end)
+    if not modelOk then useModel = false end
+  end
+
+  if useModel then
+    self.cardModel:Show()
+    self.cardClassIconFrame:Hide()
     if self.cardPortraitTypeText then
       self.cardPortraitTypeText:SetText("|cFF00FF00Live|r")
     end
@@ -4398,7 +4414,7 @@ function LeafVE.UI:CreateGearPopup()
   if self.gearPopup then return end
 
   local popup = CreateFrame("Frame", "LeafVE_GearPopup", UIParent)
-  popup:SetWidth(560)
+  popup:SetWidth(420)
   popup:SetFrameStrata("DIALOG")
   popup:EnableMouse(true)
 
@@ -4407,7 +4423,7 @@ function LeafVE.UI:CreateGearPopup()
     popup:SetHeight(LeafVE.UI.frame:GetHeight())
   else
     popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    popup:SetHeight(560)
+    popup:SetHeight(420)
   end
 
   popup:SetBackdrop({
@@ -4449,36 +4465,22 @@ function LeafVE.UI:CreateGearPopup()
   end)
   popup.refreshBtn = refreshBtn
 
-  -- Left column label
+  -- Equipment column label
   local slotLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   slotLabel:SetPoint("TOPLEFT", popup, "TOPLEFT", 15, -68)
   slotLabel:SetText("|cFFFFD700Equipment|r")
 
-  -- Slot scroll frame
+  -- Slot scroll frame (full width)
   local slotScroll = CreateFrame("ScrollFrame", "LeafVE_GearSlotScroll", popup, "UIPanelScrollFrameTemplate")
-  slotScroll:SetPoint("TOPLEFT",    slotLabel, "BOTTOMLEFT", 0,   -5)
-  slotScroll:SetPoint("BOTTOMLEFT", popup,     "BOTTOMLEFT", 15,  15)
-  slotScroll:SetWidth(290)
+  slotScroll:SetPoint("TOPLEFT",     slotLabel, "BOTTOMLEFT", 0,   -5)
+  slotScroll:SetPoint("BOTTOMRIGHT", popup,     "BOTTOMRIGHT", -30, 15)
   popup.slotScroll = slotScroll
 
   local slotChild = CreateFrame("Frame", nil, slotScroll)
-  slotChild:SetWidth(268)
+  slotChild:SetWidth(360)
   slotChild:SetHeight(1)
   slotScroll:SetScrollChild(slotChild)
   popup.slotChild = slotChild
-
-  -- Right column label
-  local statLabel = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  statLabel:SetPoint("TOPLEFT", popup, "TOPLEFT", 325, -68)
-  statLabel:SetText("|cFFFFD700Important Stats|r")
-
-  -- Stats text
-  local statsText = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  statsText:SetPoint("TOPLEFT", statLabel, "BOTTOMLEFT", 0, -8)
-  statsText:SetWidth(210)
-  statsText:SetJustifyH("LEFT")
-  statsText:SetText("")
-  popup.statsText = statsText
 
   -- Slot entry frames (pre-allocated)
   popup.slotEntries = {}
@@ -4532,7 +4534,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
 
   local scrollChild = self.gearPopup.slotChild
   local yOffset     = -5
-  local entryH      = 20
+  local entryH      = 26
 
   if snapshot and snapshot.slots then
     for i = 1, table.getn(GEAR_SLOT_NAMES) do
@@ -4544,17 +4546,23 @@ function LeafVE.UI:RefreshGearPopup(playerName)
       if not entry then
         entry = CreateFrame("Frame", nil, scrollChild)
         entry:SetHeight(entryH)
-        entry:SetWidth(265)
+        entry:SetWidth(355)
 
-        local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        labelFS:SetPoint("LEFT", entry, "LEFT", 2, 0)
-        labelFS:SetWidth(78)
+        local icon = entry:CreateTexture(nil, "ARTWORK")
+        icon:SetWidth(22)
+        icon:SetHeight(22)
+        icon:SetPoint("LEFT", entry, "LEFT", 2, 0)
+        entry.icon = icon
+
+        local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        labelFS:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+        labelFS:SetWidth(74)
         labelFS:SetJustifyH("LEFT")
         entry.labelFS = labelFS
 
-        local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         itemFS:SetPoint("LEFT", labelFS, "RIGHT", 4, 0)
-        itemFS:SetWidth(180)
+        itemFS:SetWidth(248)
         itemFS:SetJustifyH("LEFT")
         entry.itemFS = itemFS
 
@@ -4578,7 +4586,14 @@ function LeafVE.UI:RefreshGearPopup(playerName)
       entry.labelFS:SetText("|cFFAAAAAA" .. label .. ":|r")
 
       if itemId then
-        local itemName, _, itemRarity = GetItemInfo(itemId)
+        local itemName, _, itemRarity, _, _, _, _, _, _, itemTexture = GetItemInfo(itemId)
+        if itemTexture then
+          entry.icon:SetTexture(itemTexture)
+          entry.icon:SetVertexColor(1, 1, 1, 1)
+        else
+          entry.icon:SetTexture("Interface\\Icons\\INV_Misc_QuestionMark")
+          entry.icon:SetVertexColor(0.5, 0.5, 0.5, 1)
+        end
         local displayText
         if itemName then
           local r, g, b
@@ -4597,6 +4612,7 @@ function LeafVE.UI:RefreshGearPopup(playerName)
         end
         entry.itemFS:SetText(displayText)
       else
+        entry.icon:SetTexture("")
         entry.itemFS:SetText("|cFF444444--empty--|r")
         entry.itemId = nil
       end
@@ -4609,20 +4625,26 @@ function LeafVE.UI:RefreshGearPopup(playerName)
     if not entry then
       entry = CreateFrame("Frame", nil, scrollChild)
       entry:SetHeight(entryH)
-      entry:SetWidth(265)
-      local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-      labelFS:SetPoint("LEFT", entry, "LEFT", 2, 0)
-      labelFS:SetWidth(78)
+      entry:SetWidth(355)
+      local icon = entry:CreateTexture(nil, "ARTWORK")
+      icon:SetWidth(22)
+      icon:SetHeight(22)
+      icon:SetPoint("LEFT", entry, "LEFT", 2, 0)
+      entry.icon = icon
+      local labelFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+      labelFS:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+      labelFS:SetWidth(74)
       labelFS:SetJustifyH("LEFT")
       entry.labelFS = labelFS
-      local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+      local itemFS = entry:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
       itemFS:SetPoint("LEFT", labelFS, "RIGHT", 4, 0)
-      itemFS:SetWidth(180)
+      itemFS:SetWidth(248)
       itemFS:SetJustifyH("LEFT")
       entry.itemFS = itemFS
       self.gearPopup.slotEntries[1] = entry
     end
     entry:SetPoint("TOPLEFT", scrollChild, "TOPLEFT", 2, yOffset)
+    entry.icon:SetTexture("")
     entry.labelFS:SetText("")
     entry.itemFS:SetText("|cFF888888No gear data available|r")
     entry.itemId = nil
@@ -4631,16 +4653,6 @@ function LeafVE.UI:RefreshGearPopup(playerName)
   end
 
   scrollChild:SetHeight(math.max(1, math.abs(yOffset) + 20))
-
-  -- Compute and display class-aware stats
-  local statsText = "|cFF888888No stats available|r"
-  if snapshot and snapshot.slots then
-    local guildInfo = LeafVE:GetGuildInfo(playerName)
-    local class     = guildInfo and guildInfo.class or "Unknown"
-    local stats     = ComputeGearStats(snapshot.slots)
-    statsText       = FormatGearStats(stats, class)
-  end
-  self.gearPopup.statsText:SetText(statsText)
 end
 
 function LeafVE.UI:CreateAchievementListPopup()
@@ -7125,9 +7137,9 @@ local function BuildWelcomePanel(panel)
   AddLine("legendary badges at 7 and 30 days straight.", 20)
   yOffset = yOffset - 4
 
-  panel.welcomeGroupHeader = AddLine("|cFFFFD700Group Time|r  (+10 LP per online guildie every 20 minutes (cap: 700/day))", 10)
-  panel.welcomeGroupDetail = AddLine("Spend time in a party or raid with online guildmates. Earn 10 LP", 20)
-  AddLine("per online guildie per session. Offline members do not count.", 20)
+  panel.welcomeGroupHeader = AddLine("|cFFFFD700Group Time|r  (+5 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)", 10)
+  panel.welcomeGroupDetail = AddLine("Spend time in a party or raid with online guildmates. Earn 5 LP", 20)
+  AddLine("per online guildie per session. Offline and AFK members do not count.", 20)
   yOffset = yOffset - 4
 
   local soPoints = (LeafVE_DB and LeafVE_DB.options and LeafVE_DB.options.shoutoutPoints) or 10
@@ -8652,10 +8664,10 @@ function LeafVE.UI:RefreshWelcome()
     p.welcomeLoginLine:SetText("|cFFFFD700Daily Login|r  (+20 LP)")
   end
   if p.welcomeGroupHeader then
-    p.welcomeGroupHeader:SetText("|cFFFFD700Group Time|r  (+10 LP per online guildie every 20 minutes (cap: 700/day))")
+    p.welcomeGroupHeader:SetText("|cFFFFD700Group Time|r  (+5 LP per online guildie every 20 minutes, cap: 500/day, AFK detection active)")
   end
   if p.welcomeGroupDetail then
-    p.welcomeGroupDetail:SetText("Spend time in a party or raid with online guildmates. Earn 10 LP")
+    p.welcomeGroupDetail:SetText("Spend time in a party or raid with online guildmates. Earn 5 LP")
   end
   if p.welcomeSOHeader then
     p.welcomeSOHeader:SetText(string.format("|cFFFFD700Shoutouts|r  (+%d LP each)", soPts))
