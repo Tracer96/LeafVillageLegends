@@ -1045,6 +1045,30 @@ function LeafVE:HardResetAchievementLeaderboard_Local()
   Print("|cFFFF4444Achievement leaderboard cache has been wiped.|r")
 end
 
+-- Wipes ALL addon SavedVariables for this client (daily/weekly/season/lifetime
+-- points, history, badges, leaderboard cache, gear cache, notes, etc.) and then
+-- reloads the UI so the addon starts from a completely clean slate.
+function LeafVE:ResetAllData_Local()
+  LeafVE_DB       = {}
+  LeafVE_GlobalDB = {}
+  ReloadUI()
+end
+
+-- Confirmation popup for the per-user "Reset All Data" feature.
+StaticPopupDialogs["LVL_CONFIRM_RESET_ALL"] = {
+  text    = "WARNING: This will erase ALL stored data on this client\n"
+            .."(daily, weekly, season, lifetime points and full history).\n"
+            .."This cannot be undone.\n\nAre you sure?",
+  button1 = "YES",
+  button2 = "NO",
+  OnAccept = function()
+    LeafVE:ResetAllData_Local()
+  end,
+  timeout      = 0,
+  whileDead    = true,
+  hideOnEscape = true,
+}
+
 function LeafVE:GetHistory(playerName, limit)
   EnsureDB() playerName = ShortName(playerName) if not playerName then return {} end
   local history = LeafVE_DB.pointHistory[playerName] or {} local sorted = {}
@@ -6824,6 +6848,33 @@ local function BuildOptionsPanel(panel)
   uiHint:SetText("|cFF888888Use /lve bigger|smaller|wider|narrower or drag the corner grip|r")
   uiHint:SetWidth(430)
   uiHint:SetJustifyH("LEFT")
+  yBase = yBase - 28
+
+  -- Divider above Danger Zone
+  local divDangerOpt = panel:CreateTexture(nil, "ARTWORK")
+  divDangerOpt:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, yBase)
+  divDangerOpt:SetWidth(430)
+  divDangerOpt:SetHeight(1)
+  divDangerOpt:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  divDangerOpt:SetVertexColor(0.8, 0.1, 0.1, 0.6)
+  yBase = yBase - 18
+
+  -- Section: Danger Zone (per-user data reset)
+  local dangerOptSection = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  dangerOptSection:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, yBase)
+  dangerOptSection:SetText("|cFFFF4444Danger Zone|r")
+  yBase = yBase - 28
+
+  -- "Reset All Data" button: clears this client's SavedVariables and reloads the UI.
+  local resetAllDataBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  resetAllDataBtn:SetWidth(160)
+  resetAllDataBtn:SetHeight(22)
+  resetAllDataBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, yBase)
+  resetAllDataBtn:SetText("|cFFFF4444Reset All Data|r")
+  SkinButtonAccent(resetAllDataBtn)
+  resetAllDataBtn:SetScript("OnClick", function()
+    StaticPopup_Show("LVL_CONFIRM_RESET_ALL")
+  end)
 
   subFrame:SetAllPoints(panel)
   panel.optSubFrame = subFrame
