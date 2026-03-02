@@ -2081,7 +2081,17 @@ function LeafVE:BroadcastLeaderboardData()
   if table.getn(chunk) > 0 then
     SendAddonMessage("LeafVE", "LBOARD:"..epochPrefix..table.concat(chunk, ","), "GUILD")
   end
-  
+
+  -- Refresh leaderboard panels if any are currently open
+  if LeafVE.UI and LeafVE.UI.panels then
+    if LeafVE.UI.panels.leaderLife and LeafVE.UI.panels.leaderLife:IsVisible() then
+      LeafVE.UI:RefreshLeaderboard("leaderLife")
+    end
+    if LeafVE.UI.panels.leaderWeek and LeafVE.UI.panels.leaderWeek:IsVisible() then
+      LeafVE.UI:RefreshLeaderboard("leaderWeek")
+    end
+  end
+
 end
 
 function LeafVE:SendResyncRequest()
