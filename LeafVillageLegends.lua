@@ -18,9 +18,9 @@ if not string.match then
 end
 
 LeafVE = LeafVE or {}
-LeafVE.name = "LeafVillageLegeds"
+LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.3"
+LeafVE.version = "11.4"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
@@ -3064,7 +3064,7 @@ end
     local newTotal = L + G + S
     local existingEntry = LeafVE_DB.lboard.alltime[playerName]
     local existingTotal = existingEntry and ((existingEntry.L or 0) + (existingEntry.G or 0) + (existingEntry.S or 0)) or 0
-    if newTotal > 0 and newTotal >= existingTotal then
+    if newTotal > 0 and newTotal > existingTotal then
       LeafVE_DB.lboard.alltime[playerName] = {L = L, G = G, S = S}
     end
 
@@ -3083,7 +3083,7 @@ end
     local newTotal = L + G + S
     local existingEntry = type(LeafVE_DB.lboard.weekly[wk]) == "table" and LeafVE_DB.lboard.weekly[wk][playerName]
     local existingTotal = existingEntry and ((existingEntry.L or 0) + (existingEntry.G or 0) + (existingEntry.S or 0)) or 0
-    if newTotal > 0 and newTotal >= existingTotal then
+    if newTotal > 0 and newTotal > existingTotal then
       if type(LeafVE_DB.lboard.weekly[wk]) ~= "table" then LeafVE_DB.lboard.weekly[wk] = {} end
       LeafVE_DB.lboard.weekly[wk][playerName] = {L = L, G = G, S = S}
     end
@@ -7030,7 +7030,50 @@ local function BuildAdminPanel(panel)
   resetAllBadgesBtn:SetText("Reset ALL Badges")
   SkinButtonAccent(resetAllBadgesBtn)
   resetAllBadgesBtn:SetScript("OnClick", function()
-    LeafVE:ResetAllBadges()
+    -- Confirmation popup
+    if not LeafVE._confirmResetAllBadgesFrame then
+      local cf = CreateFrame("Frame", "LeafVE_ConfirmResetAllBadges", UIParent)
+      cf:SetWidth(380)
+      cf:SetHeight(120)
+      cf:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+      cf:SetFrameStrata("DIALOG")
+      cf:EnableMouse(true)
+      cf:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = {left = 4, right = 4, top = 4, bottom = 4}
+      })
+      cf:SetBackdropColor(0.1, 0.02, 0.02, 0.97)
+      cf:SetBackdropBorderColor(0.8, 0.1, 0.1, 1)
+
+      local warningText = cf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      warningText:SetPoint("TOP", cf, "TOP", 0, -16)
+      warningText:SetWidth(340)
+      warningText:SetJustifyH("CENTER")
+      warningText:SetText("|cFFFF4444This will reset ALL badges for ALL players.\nThis cannot be undone.|r")
+
+      local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      confirmBtn:SetWidth(120)
+      confirmBtn:SetHeight(22)
+      confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
+      confirmBtn:SetText("Confirm Reset")
+      confirmBtn:SetScript("OnClick", function()
+        LeafVE:ResetAllBadges()
+        cf:Hide()
+      end)
+
+      local cancelBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      cancelBtn:SetWidth(80)
+      cancelBtn:SetHeight(22)
+      cancelBtn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -20, 14)
+      cancelBtn:SetText("Cancel")
+      cancelBtn:SetScript("OnClick", function() cf:Hide() end)
+
+      cf:Hide()
+      LeafVE._confirmResetAllBadgesFrame = cf
+    end
+    LeafVE._confirmResetAllBadgesFrame:Show()
   end)
 
   yBase = yBase - 38
