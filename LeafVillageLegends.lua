@@ -20,14 +20,14 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.6"
+LeafVE.version = "11.7"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
-LeafVE.minCompatVersion = "11.6"
+LeafVE.minCompatVersion = "11.7"
 
 -- The latest published version; used to detect when the running addon is outdated.
-local LATEST_VERSION = "11.6"
+local LATEST_VERSION = "11.7"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
