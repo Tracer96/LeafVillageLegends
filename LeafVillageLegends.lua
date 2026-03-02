@@ -1726,6 +1726,7 @@ function LeafVE:OnInstanceExit()
           tracked.bosses = tracked.bosses + self.instanceBossesKilledThisRun
           self:AddToHistory(me, "G", awarded, "Instance completion: "..(self.instanceZone or "Unknown"))
           Print(string.format("Instance complete! +%d G (%d boss%s)", awarded, self.instanceBossesKilledThisRun, self.instanceBossesKilledThisRun ~= 1 and "es" or ""))
+          self:BroadcastLeaderboardData()
         end
       else
         Print("Instance exited with no bosses slain. No completion points awarded.")
@@ -1771,6 +1772,7 @@ function LeafVE:OnBossKillChat(msg)
       self:ShowNotification("Boss Slain!", string.format("%s  +%d LP", bossName, awarded), LEAF_EMBLEM, THEME.gold)
     end
     Print(string.format("Boss slain: %s! +%d LP", bossName, awarded))
+    self:BroadcastLeaderboardData()
   end
 end
 
@@ -1838,6 +1840,7 @@ function LeafVE:OnQuestTurnedIn()
       self:ShowNotification("Quest Complete!", string.format("[%s] +%d LP", displayTitle, awarded), QUEST_ICON, THEME.gold)
     end
     Print(string.format("Quest complete! [%s] +%d G", displayTitle, awarded))
+    self:BroadcastLeaderboardData()
   end
   -- Update the cached log to reflect the turn-in
   self:CacheQuestLog()
