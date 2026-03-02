@@ -20,7 +20,7 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.4"
+LeafVE.version = "11.5"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
@@ -36,6 +36,7 @@ local GUILD_ROSTER_CACHE_DURATION = 30
 local SHOUTOUT_MAX_PER_DAY = 2
 local LBOARD_RESYNC_COOLDOWN = 30  -- seconds between outgoing LBOARDREQ messages
 local LBOARD_RESPOND_COOLDOWN = 30 -- seconds between responses to LBOARDREQ
+local MAX_FUTURE_EPOCH_OFFSET = 7 * SECONDS_PER_DAY  -- reject reset epochs more than 1 week in the future
 local SHOUT_SYNC_RESPOND_COOLDOWN = 30 -- seconds between shoutout history sync responses
 local DEFAULT_ACHIEVEMENT_POINTS = 10  -- fallback points per achievement when metadata is unavailable
 
@@ -2685,6 +2686,14 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     EnsureDB()
     local myResetAt = LeafVE_DB.lastLeafResetAt or 0
     if incomingEpoch > myResetAt then
+      -- Reject epochs that are unreasonably far in the future; a corrupted
+      -- SavedVariables entry with a bogus timestamp would otherwise wipe the
+      -- entire guild's Leaf Points during a normal leaderboard sync.
+      local now = time()
+      if incomingEpoch > now + MAX_FUTURE_EPOCH_OFFSET then
+        Print("|cFFFF4444LeafVE: Ignored suspicious reset epoch from "..tostring(sender).." (epoch "..tostring(incomingEpoch).." is more than 1 week in the future).|r")
+        return
+      end
       LeafVE:HardResetLeafPoints_Local()
       -- Override the timestamps set by HardResetLeafPoints_Local so they
       -- reflect the original admin-reset time, not the current wall-clock.
