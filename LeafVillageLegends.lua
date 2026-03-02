@@ -7278,8 +7278,8 @@ function LeafVE:ShowManualResetConfirm()
     warningText:SetWidth(380)
     warningText:SetJustifyH("CENTER")
     warningText:SetText(
-      "|cFFFF4444Are you sure you want to reset all Leaf Points and achievements\n"..
-      "for the guild? This will broadcast a reset to all online members.|r"
+      "|cFFFF4444Are you sure you want to reset all Leaf Points and\n"..
+      "Leaf Point leaderboards for the guild? This will broadcast a reset to all online members.|r"
     )
 
     local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
@@ -7289,15 +7289,13 @@ function LeafVE:ShowManualResetConfirm()
     confirmBtn:SetText("|cFFFF4444Confirm Reset|r")
     confirmBtn:SetScript("OnClick", function()
       LeafVE:HardResetLeafPoints_Local()
-      LeafVE:HardResetAchievementLeaderboard_Local()
       if InGuild() then
         local epoch = time()
         SendAddonMessage("LeafVE", "LVE_ADMIN_RESET_LEAF_ALL:"..epoch, "GUILD")
-        SendAddonMessage("LeafVE", "LVE_ADMIN_RESET_ACHIEVE_ALL:"..epoch, "GUILD")
         SendAddonMessage("LeafVE", "LVE_RESET_LBOARD_ZERO:"..epoch, "GUILD")
         LeafVE:BroadcastLeaderboardData()
       end
-      Print("|cFFFF4444Manual reset complete: all Leaf Points and achievements wiped.|r")
+      Print("|cFFFF4444Manual reset complete: all Leaf Points and Leaf Point leaderboards wiped.|r")
       cf:Hide()
     end)
 
