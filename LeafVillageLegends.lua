@@ -2007,49 +2007,28 @@ function LeafVE:BroadcastLeaderboardData()
   
   local wk = WeekKey()
   local data = {}
-  
-  -- Collect ALL known players from local alltime and synced lboard data
-  -- so that players who were offline when events occurred can still receive the full leaderboard
-  local knownPlayers = {}
-  for name, _ in pairs(LeafVE_DB.alltime) do
-    knownPlayers[name] = true
+
+  -- Only broadcast the sender's own data so each client contributes its own
+  -- authoritative record; all clients converge by merging per-player broadcasts.
+
+  -- Lifetime: prefer local alltime (direct witness), fall back to synced lboard data.
+  local lbase = LeafVE_DB.alltime[me] or LeafVE_DB.lboard.alltime[me]
+  local lL = lbase and (lbase.L or 0) or 0
+  local lG = lbase and (lbase.G or 0) or 0
+  local lS = lbase and (lbase.S or 0) or 0
+  if lL + lG + lS > 0 then
+    table.insert(data, string.format("L:%s:%d:%d:%d", me, lL, lG, lS))
   end
-  for name, _ in pairs(LeafVE_DB.lboard.alltime) do
-    knownPlayers[name] = true
-  end
-  
-  -- Also include all players from this week's aggregation and synced weekly data
+
+  -- Weekly: prefer local aggregation, fall back to synced weekly data.
   local weekAgg = AggForThisWeek()
   local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
-  for name, _ in pairs(weekAgg) do
-    knownPlayers[name] = true
-  end
-  for name, _ in pairs(syncedWeek) do
-    knownPlayers[name] = true
-  end
-  
-  for name, _ in pairs(knownPlayers) do
-    -- Lifetime: prefer local alltime (direct witness), fall back to synced lboard data.
-    -- Skip entries with no points to avoid broadcasting zeros that could
-    -- overwrite correct data held by peers (defence-in-depth alongside the
-    -- higher-total-wins guard in ReceiveLeaderboardData).
-    local lbase = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name] or {L = 0, G = 0, S = 0}
-    local lL, lG, lS = lbase.L or 0, lbase.G or 0, lbase.S or 0
-    if lL + lG + lS > 0 then
-      table.insert(data, string.format("L:%s:%d:%d:%d", name, lL, lG, lS))
-    end
-
-    -- Weekly: prefer local aggregation, fall back to synced weekly data.
-    -- Skip entries with no points to avoid broadcasting zeros that could
-    -- overwrite correct data held by peers (defence-in-depth alongside the
-    -- higher-total-wins guard in ReceiveLeaderboardData).
-    local wbase = weekAgg[name] or syncedWeek[name]
-    local wL = wbase and (wbase.L or 0) or 0
-    local wG = wbase and (wbase.G or 0) or 0
-    local wS = wbase and (wbase.S or 0) or 0
-    if wL + wG + wS > 0 then
-      table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, name, wL, wG, wS))
-    end
+  local wbase = weekAgg[me] or syncedWeek[me]
+  local wL = wbase and (wbase.L or 0) or 0
+  local wG = wbase and (wbase.G or 0) or 0
+  local wS = wbase and (wbase.S or 0) or 0
+  if wL + wG + wS > 0 then
+    table.insert(data, string.format("W%s:%s:%d:%d:%d", wk, me, wL, wG, wS))
   end
   
   -- Send in chunks to stay within the 255-byte WoW addon message limit.
