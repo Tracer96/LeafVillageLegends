@@ -41,6 +41,11 @@ local LBOARD_RESYNC_COOLDOWN = 30  -- seconds between outgoing LBOARDREQ message
 local LBOARD_RESPOND_COOLDOWN = 30 -- seconds between responses to LBOARDREQ
 local MAX_FUTURE_EPOCH_OFFSET = 7 * SECONDS_PER_DAY  -- reject reset epochs more than 1 week in the future
 local SHOUT_SYNC_RESPOND_COOLDOWN = 30 -- seconds between shoutout history sync responses
+local LBOARD_HEARTBEAT_INTERVAL = 300   -- seconds between background heartbeat syncs
+local LBOARD_STALE_THRESHOLD    = 600   -- seconds before sync data is considered stale
+local LBOARD_OFFLINE_COLOR      = "|cff999999"
+local LBOARD_OLDVER_COLOR       = "|cffff8000"
+local BROADCAST_MY_DATA_COOLDOWN = 2    -- seconds between self-broadcast (throttle)
 local DEFAULT_ACHIEVEMENT_POINTS = 10  -- fallback points per achievement when metadata is unavailable
 
 local GEAR_BROADCAST_THROTTLE = 10  -- seconds between gear broadcasts
@@ -472,6 +477,9 @@ LeafVE.lastShoutSyncRespondAt = 0
 LeafVE.lastBadgeSyncRespondAt = 0
 LeafVE.lastAchSyncRespondAt = 0
 LeafVE.shoutSyncBuffer = {}
+LeafVE.lastSyncTime = 0
+LeafVE.lboardCache = {}
+LeafVE.lastBroadcastMyDataAt = 0
 LeafVE.instanceJoinedAt = nil
 LeafVE.instanceZone = nil
 LeafVE.instanceHasGuildie = false
@@ -1390,6 +1398,7 @@ function LeafVE:AddPoints(playerName, pointType, amount)
     end
   end
   self:CheckBadgeMilestones(playerName)
+  if isMe then self:BroadcastMyData() end
   return amount
 end
 
@@ -2171,7 +2180,64 @@ function LeafVE:SendResyncRequest()
   end
 end
 
--- Serialize the full shoutout history table and broadcast it in chunks.
+-- Broadcast the local player's current LP totals so guildmates immediately
+-- receive up-to-date data without waiting for the next full LBOARD: sync.
+-- Payload: LBOARDDATA:<name>|<totalLP>|<weeklyLP>|<timestamp>|<addonVersion>
+function LeafVE:BroadcastMyData()
+  if not InGuild() then return end
+  local me = ShortName(UnitName("player"))
+  if not me then return end
+  local now = Now()
+  if (now - self.lastBroadcastMyDataAt) < BROADCAST_MY_DATA_COOLDOWN then return end
+  self.lastBroadcastMyDataAt = now
+  EnsureDB()
+  local allPts = LeafVE_DB.alltime[me] or {L = 0, G = 0, S = 0}
+  local totalLP = (allPts.L or 0) + (allPts.G or 0) + (allPts.S or 0)
+  local wk = WeekKey()
+  local weekPts = 0
+  local localWeek = AggForThisWeek()
+  if localWeek[me] then
+    local lw = localWeek[me]
+    weekPts = (lw.L or 0) + (lw.G or 0) + (lw.S or 0)
+  else
+    local syncedWeek = type(LeafVE_DB.lboard.weekly[wk]) == "table" and LeafVE_DB.lboard.weekly[wk] or {}
+    if syncedWeek[me] then
+      local w = syncedWeek[me]
+      weekPts = (w.L or 0) + (w.G or 0) + (w.S or 0)
+    end
+  end
+  SendAddonMessage("LeafVE", "LBOARDDATA:" .. me .. "|" .. totalLP .. "|" .. weekPts .. "|" .. now .. "|" .. LeafVE.version, "GUILD")
+end
+
+-- Admin-only: re-broadcast all known player data from lboardCache and GlobalDB
+-- to help guildmates on the new version see data from players who haven't updated.
+function LeafVE:AdminBroadcastAllKnownData()
+  if not self:IsAdminRank() then
+    Print("|cFFFF4444This command is restricted to Hokage/Sannin/Anbu.|r")
+    return
+  end
+  if not InGuild() then return end
+  local count = 0
+  -- Broadcast from live cache first
+  if LeafVE.lboardCache then
+    for name, data in pairs(LeafVE.lboardCache) do
+      local payload = "LBOARDDATA:" .. name .. "|" .. (data.lp or 0) .. "|" .. (data.weekly or 0) .. "|" .. (data.updatedAt or 0) .. "|" .. (data.addonVersion or "legacy")
+      SendAddonMessage("LeafVE", payload, "GUILD")
+      count = count + 1
+    end
+  end
+  -- Also broadcast from persisted GlobalDB for players not in live cache
+  if LeafVE_GlobalDB and LeafVE_GlobalDB.knownPlayers then
+    for name, data in pairs(LeafVE_GlobalDB.knownPlayers) do
+      if not (LeafVE.lboardCache and LeafVE.lboardCache[name]) then
+        local payload = "LBOARDDATA:" .. name .. "|" .. (data.lp or 0) .. "|" .. (data.weekly or 0) .. "|" .. (data.updatedAt or 0) .. "|" .. (data.addonVersion or "legacy")
+        SendAddonMessage("LeafVE", payload, "GUILD")
+        count = count + 1
+      end
+    end
+  end
+  Print(string.format("Broadcast %d known player records to the guild.", count))
+end
 -- Format per entry: "giver\31target\31timestamp", entries separated by ",".
 -- Message format: "SHOUTSYNC:N/T:payload" where N is chunk number, T is total.
 function LeafVE:BroadcastShoutoutHistory()
@@ -2615,6 +2681,60 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       end
       if LeafVE.UI and LeafVE.UI.Refresh then
         LeafVE.UI:Refresh()
+      end
+    end
+    return
+  end
+
+  -- Handle real-time single-player leaderboard push (LBOARDDATA)
+  -- Payload: LBOARDDATA:<name>|<totalLP>|<weeklyLP>|<timestamp>|<addonVersion>
+  if string.sub(message, 1, 10) == "LBOARDDATA" then
+    local rest = string.sub(message, 12)  -- skip "LBOARDDATA:"
+    local p1 = string.find(rest, "|")
+    if not p1 then return end
+    local name = string.sub(rest, 1, p1 - 1)
+    -- Anti-spoof: sender must match the declared player name
+    if Lower(ShortName(name) or name) ~= Lower(sender) then return end
+    local rest2 = string.sub(rest, p1 + 1)
+    local p2 = string.find(rest2, "|")
+    if not p2 then return end
+    local total = tonumber(string.sub(rest2, 1, p2 - 1)) or 0
+    local rest3 = string.sub(rest2, p2 + 1)
+    local p3 = string.find(rest3, "|")
+    if not p3 then return end
+    local weekly = tonumber(string.sub(rest3, 1, p3 - 1)) or 0
+    local rest4 = string.sub(rest3, p3 + 1)
+    local p4 = string.find(rest4, "|")
+    if not p4 then return end
+    local ts = tonumber(string.sub(rest4, 1, p4 - 1)) or 0
+    local ver = string.sub(rest4, p4 + 1)
+    local existing = LeafVE.lboardCache[name]
+    local existingTs = existing and existing.updatedAt or 0
+    if ts > existingTs then
+      LeafVE.lboardCache[name] = {
+        lp = total,
+        weekly = weekly,
+        updatedAt = ts,
+        addonVersion = ver,
+      }
+      LeafVE.lastSyncTime = Now()
+      -- Persist to GlobalDB so data survives sessions
+      EnsureDB()
+      if not LeafVE_GlobalDB.knownPlayers then LeafVE_GlobalDB.knownPlayers = {} end
+      LeafVE_GlobalDB.knownPlayers[name] = {
+        lp = total,
+        weekly = weekly,
+        updatedAt = ts,
+        addonVersion = ver,
+      }
+      -- Refresh leaderboard panels if visible
+      if LeafVE.UI and LeafVE.UI.panels then
+        if LeafVE.UI.panels.leaderLife and LeafVE.UI.panels.leaderLife:IsVisible() then
+          LeafVE.UI:RefreshLeaderboard("leaderLife")
+        end
+        if LeafVE.UI.panels.leaderWeek and LeafVE.UI.panels.leaderWeek:IsVisible() then
+          LeafVE.UI:RefreshLeaderboard("leaderWeek")
+        end
       end
     end
     return
@@ -5894,6 +6014,22 @@ local function BuildLeaderboardPanel(panel, isWeekly)
     LeafVE.lastResyncRequestAt = 0
     LeafVE:SendResyncRequest()
     LeafVE:BroadcastLeaderboardData()
+    LeafVE:BroadcastMyData()
+  end)
+
+  -- Sync status indicator (top-right corner)
+  local syncStatus = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  syncStatus:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -40, -12)
+  syncStatus:SetText("|cff888888● Unknown|r")
+  panel.syncStatus = syncStatus
+
+  -- Trigger resync + self-broadcast when the panel is shown
+  panel:SetScript("OnShow", function()
+    if InGuild() then
+      LeafVE.lastResyncRequestAt = 0
+      LeafVE:SendResyncRequest()
+      LeafVE:BroadcastMyData()
+    end
   end)
 end
 
@@ -5932,12 +6068,16 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
     local localWeek = AggForThisWeek()
 
-    -- Iterate the union of localWeek and syncedWeek so that players whose
-    -- points were awarded on a different client (and are absent from localWeek)
-    -- are still included via their syncedWeek entry.
+    -- Iterate the union of localWeek, syncedWeek, lboardCache, and knownPlayers
     local seen = {}
     for name, _ in pairs(localWeek) do seen[name] = true end
     for name, _ in pairs(syncedWeek) do seen[name] = true end
+    if LeafVE.lboardCache then
+      for name, _ in pairs(LeafVE.lboardCache) do seen[name] = true end
+    end
+    if LeafVE_GlobalDB and LeafVE_GlobalDB.knownPlayers then
+      for name, _ in pairs(LeafVE_GlobalDB.knownPlayers) do seen[name] = true end
+    end
 
     for name, _ in pairs(seen) do
       local localPts  = localWeek[name]
@@ -5946,21 +6086,37 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
       -- client); fall back to local AggForThisWeek() only when no synced data exists.
       local pts = syncedPts or localPts
       local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
+      -- Check lboardCache and knownPlayers for newer/additional weekly data
+      local cacheEntry = LeafVE.lboardCache and LeafVE.lboardCache[name]
+      local fallbackEntry = LeafVE_GlobalDB and LeafVE_GlobalDB.knownPlayers and LeafVE_GlobalDB.knownPlayers[name]
+      local cacheWeekly = cacheEntry and (cacheEntry.weekly or 0) or 0
+      local fallbackWeekly = fallbackEntry and (fallbackEntry.weekly or 0) or 0
+      local altTotal = math.max(cacheWeekly, fallbackWeekly)
+      if altTotal > total then total = altTotal end
       local gInfo = memberSet[Lower(name)]
+      local addonVer = cacheEntry and cacheEntry.addonVersion
+      local isOffline = (not localPts and not syncedPts and not cacheEntry and fallbackEntry ~= nil)
       table.insert(leaders, {
         name = name, total = total,
         L = pts and (pts.L or 0) or 0,
         G = pts and (pts.G or 0) or 0,
         S = pts and (pts.S or 0) or 0,
-        class = (gInfo and gInfo.class) or "Unknown"
+        class = (gInfo and gInfo.class) or "Unknown",
+        addonVersion = addonVer,
+        isOffline = isOffline,
       })
     end
   else
-    -- Iterate the union of alltime and lboard.alltime so that players whose
-    -- lifetime data was only received via sync are still included.
+    -- Iterate the union of alltime, lboard.alltime, lboardCache, and knownPlayers
     local seen = {}
     for name, _ in pairs(LeafVE_DB.alltime) do seen[name] = true end
     for name, _ in pairs(LeafVE_DB.lboard.alltime) do seen[name] = true end
+    if LeafVE.lboardCache then
+      for name, _ in pairs(LeafVE.lboardCache) do seen[name] = true end
+    end
+    if LeafVE_GlobalDB and LeafVE_GlobalDB.knownPlayers then
+      for name, _ in pairs(LeafVE_GlobalDB.knownPlayers) do seen[name] = true end
+    end
 
     for name, _ in pairs(seen) do
       local localPts  = LeafVE_DB.alltime[name]
@@ -5969,13 +6125,24 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
       -- client); fall back to LeafVE_DB.alltime only when no synced data exists.
       local pts = syncedPts or localPts
       local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
+      -- Check lboardCache and knownPlayers for newer/additional data
+      local cacheEntry = LeafVE.lboardCache and LeafVE.lboardCache[name]
+      local fallbackEntry = LeafVE_GlobalDB and LeafVE_GlobalDB.knownPlayers and LeafVE_GlobalDB.knownPlayers[name]
+      local cacheLp = cacheEntry and (cacheEntry.lp or 0) or 0
+      local fallbackLp = fallbackEntry and (fallbackEntry.lp or 0) or 0
+      local altTotal = math.max(cacheLp, fallbackLp)
+      if altTotal > total then total = altTotal end
       local gInfo = memberSet[Lower(name)]
+      local addonVer = cacheEntry and cacheEntry.addonVersion
+      local isOffline = (not localPts and not syncedPts and not cacheEntry and fallbackEntry ~= nil)
       table.insert(leaders, {
         name = name, total = total,
         L = pts and (pts.L or 0) or 0,
         G = pts and (pts.G or 0) or 0,
         S = pts and (pts.S or 0) or 0,
-        class = (gInfo and gInfo.class) or "Unknown"
+        class = (gInfo and gInfo.class) or "Unknown",
+        addonVersion = addonVer,
+        isOffline = isOffline,
       })
     end
   end
@@ -6091,7 +6258,17 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
       end
       
       local classColor = CLASS_COLORS[class] or {1, 1, 1}
-      frame.nameText:SetText(leader.name)
+      -- Build display name with optional offline/version badge
+      local displayName = leader.name
+      if leader.isOffline then
+        displayName = leader.name .. " " .. LBOARD_OFFLINE_COLOR .. "[offline]|r"
+      elseif leader.addonVersion then
+        local ver = leader.addonVersion
+        if ver == "legacy" or VersionLessThan(ver, LeafVE.version) then
+          displayName = leader.name .. " " .. LBOARD_OLDVER_COLOR .. "[old]|r"
+        end
+      end
+      frame.nameText:SetText(displayName)
       frame.nameText:SetTextColor(classColor[1], classColor[2], classColor[3])
       frame.playerName = leader.name
       
@@ -6113,6 +6290,21 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
   
   panel.scrollFrame:SetVerticalScroll(0)
   panel.scrollBar:SetValue(0)
+
+  -- Update sync status indicator
+  if panel.syncStatus then
+    local now = Now()
+    local lastSync = LeafVE.lastSyncTime or 0
+    local age = (lastSync > 0) and (now - lastSync) or math.huge
+    if age < 60 then
+      panel.syncStatus:SetText("|cff00ff00● Live|r")
+    elseif age < LBOARD_STALE_THRESHOLD then
+      local mins = math.floor(age / 60)
+      panel.syncStatus:SetText(string.format("|cffffff00● %dm ago|r", mins))
+    else
+      panel.syncStatus:SetText("|cffff0000● Stale|r")
+    end
+  end
 end
 
 local function BuildRosterPanel(panel)
@@ -6192,6 +6384,17 @@ local function BuildRosterPanel(panel)
     if LeafVE.UI and LeafVE.UI.RefreshRoster then
       LeafVE.UI:RefreshRoster()
     end
+  end)
+
+  -- Refresh button (re-fetches guild roster and triggers a resync)
+  local rosterRefreshBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+  rosterRefreshBtn:SetPoint("LEFT", clearBtn, "RIGHT", 6, 0)
+  rosterRefreshBtn:SetWidth(80)
+  rosterRefreshBtn:SetHeight(20)
+  rosterRefreshBtn:SetText("Refresh")
+  SkinButtonAccent(rosterRefreshBtn)
+  rosterRefreshBtn:SetScript("OnClick", function()
+    LeafVE:ForceRefreshRoster()
   end)
   
   -- SCROLL FRAME (moved down for search bar)
@@ -6372,6 +6575,19 @@ end)
   
   self.panels.roster.scrollFrame:SetVerticalScroll(0)
   self.panels.roster.scrollBar:SetValue(0)
+end
+
+function LeafVE:ForceRefreshRoster()
+  self.guildRosterCacheTime = 0
+  self.guildRosterRequestAt = 0
+  if GuildRoster then GuildRoster() end
+  self:UpdateGuildRosterCache()
+  self:SendResyncRequest()
+  self:BroadcastMyData()
+  if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.roster
+    and LeafVE.UI.panels.roster:IsVisible() then
+    LeafVE.UI:RefreshRoster()
+  end
 end
 
 local function BuildLiveHistoryPanel(panel)
@@ -9297,6 +9513,7 @@ ef:RegisterEvent("CHAT_MSG_GUILD")
 ef:RegisterEvent("CHAT_MSG_WHISPER")
 ef:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
 ef:RegisterEvent("UNIT_INVENTORY_CHANGED")
+ef:RegisterEvent("GUILD_MEMBER_LOGIN")
 
 local groupCheckTimer = 0
 local notificationTimer = 0
@@ -9379,8 +9596,25 @@ ef:SetScript("OnEvent", function()
           -- Broadcast gear so guildmates can cache it
           LeafVE.lastGearBroadcast = 0  -- bypass throttle for login broadcast
           LeafVE:BroadcastMyGear()
+          -- Also push our own LP data immediately on login
+          LeafVE.lastBroadcastMyDataAt = 0
+          LeafVE:BroadcastMyData()
         end
         broadcastFrame:SetScript("OnUpdate", nil)
+      end
+    end)
+
+    -- 5-minute background heartbeat: send resync request and broadcast own data
+    local LeafVE_HeartbeatAccum = 0
+    local LeafVE_HeartbeatFrame = CreateFrame("Frame", "LeafVE_HeartbeatFrame")
+    LeafVE_HeartbeatFrame:SetScript("OnUpdate", function()
+      LeafVE_HeartbeatAccum = LeafVE_HeartbeatAccum + arg1
+      if LeafVE_HeartbeatAccum >= LBOARD_HEARTBEAT_INTERVAL then
+        LeafVE_HeartbeatAccum = 0
+        if InGuild() then
+          LeafVE:SendResyncRequest()
+          LeafVE:BroadcastMyData()
+        end
       end
     end)
     return
@@ -9453,6 +9687,13 @@ ef:SetScript("OnEvent", function()
   if event == "UNIT_INVENTORY_CHANGED" then
     if arg1 == "player" then
       LeafVE:BroadcastMyGear()
+    end
+    return
+  end
+
+  if event == "GUILD_MEMBER_LOGIN" then
+    if InGuild() then
+      LeafVE:BroadcastMyData()
     end
     return
   end
@@ -9613,6 +9854,10 @@ SlashCmdList["LEAFVE"] = function(msg)
   elseif trimmedMsg == "reset" then
     -- Admin-only: prompt a guild-wide manual reset confirmation.
     LeafVE:ShowManualResetConfirm()
+
+  elseif trimmedMsg == "syncoffline" then
+    -- Admin-only: re-broadcast all known player data to the guild.
+    LeafVE:AdminBroadcastAllKnownData()
 
   elseif trimmedMsg == "uireset" then
     EnsureDB()
