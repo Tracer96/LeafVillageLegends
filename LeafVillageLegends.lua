@@ -5881,6 +5881,20 @@ local function BuildLeaderboardPanel(panel, isWeekly)
       LeafVE:ShowManualResetConfirm()
     end)
   end
+
+  -- Refresh button (visible to all players)
+  local refreshBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+  refreshBtn:SetWidth(80)
+  refreshBtn:SetHeight(22)
+  refreshBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 14, -8)
+  refreshBtn:SetText("Refresh")
+  SkinButtonAccent(refreshBtn)
+  refreshBtn:SetScript("OnClick", function()
+    LeafVE.UI:RefreshLeaderboard(panel.isWeekly and "leaderWeek" or "leaderLife")
+    LeafVE.lastResyncRequestAt = 0
+    LeafVE:SendResyncRequest()
+    LeafVE:BroadcastLeaderboardData()
+  end)
 end
 
 function LeafVE.UI:RefreshLeaderboard(panelName)
@@ -8990,17 +9004,9 @@ function LeafVE.UI:Refresh()
         local name = guildInfo.name
         local localPts = localWeek[name]
         local syncedPts = syncedWeek and syncedWeek[name]
-        local pts
-        if localPts and syncedPts then
-          local lTotal = (localPts.L or 0) + (localPts.G or 0) + (localPts.S or 0)
-          local sTotal = (syncedPts.L or 0) + (syncedPts.G or 0) + (syncedPts.S or 0)
-          pts = lTotal >= sTotal and localPts or syncedPts
-        elseif localPts then
-          pts = localPts
-        else
-          pts = syncedPts or {L = 0, G = 0, S = 0}
-        end
-        local total = (pts.L or 0) + (pts.G or 0) + (pts.S or 0)
+        -- Local aggregation is authoritative; synced is fallback only when local is absent.
+        local pts = localPts or syncedPts
+        local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
         if total > 0 then
           table.insert(weekLeaders, {name = name, total = total})
         end
