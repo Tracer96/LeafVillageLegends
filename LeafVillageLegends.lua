@@ -5932,35 +5932,50 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
     local localWeek = AggForThisWeek()
 
-    for _, guildInfo in pairs(memberSet) do
-      local name = guildInfo.name
+    -- Iterate the union of localWeek and syncedWeek so that players whose
+    -- points were awarded on a different client (and are absent from localWeek)
+    -- are still included via their syncedWeek entry.
+    local seen = {}
+    for name, _ in pairs(localWeek) do seen[name] = true end
+    for name, _ in pairs(syncedWeek) do seen[name] = true end
+
+    for name, _ in pairs(seen) do
+      local localPts  = localWeek[name]
+      local syncedPts = syncedWeek[name]
       -- LOCAL first: prefer AggForThisWeek(); fall back to lboard cache for
-      -- guild members not witnessed locally this week.
-      local wData = localWeek[name] or syncedWeek[name]
-      local wL = wData and (wData.L or 0) or 0
-      local wG = wData and (wData.G or 0) or 0
-      local wS = wData and (wData.S or 0) or 0
-      local total = wL + wG + wS
+      -- players not witnessed locally this week.
+      local pts = localPts or syncedPts
+      local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
+      local gInfo = memberSet[Lower(name)]
       table.insert(leaders, {
         name = name, total = total,
-        L = wL, G = wG, S = wS,
-        class = guildInfo.class or "Unknown"
+        L = pts and (pts.L or 0) or 0,
+        G = pts and (pts.G or 0) or 0,
+        S = pts and (pts.S or 0) or 0,
+        class = (gInfo and gInfo.class) or "Unknown"
       })
     end
   else
-    for _, guildInfo in pairs(memberSet) do
-      local name = guildInfo.name
+    -- Iterate the union of alltime and lboard.alltime so that players whose
+    -- lifetime data was only received via sync are still included.
+    local seen = {}
+    for name, _ in pairs(LeafVE_DB.alltime) do seen[name] = true end
+    for name, _ in pairs(LeafVE_DB.lboard.alltime) do seen[name] = true end
+
+    for name, _ in pairs(seen) do
+      local localPts  = LeafVE_DB.alltime[name]
+      local syncedPts = LeafVE_DB.lboard.alltime[name]
       -- LOCAL first: prefer LeafVE_DB.alltime; fall back to lboard cache for
-      -- guild members whose lifetime data was only received via sync.
-      local lData = LeafVE_DB.alltime[name] or LeafVE_DB.lboard.alltime[name]
-      local lL = lData and (lData.L or 0) or 0
-      local lG = lData and (lData.G or 0) or 0
-      local lS = lData and (lData.S or 0) or 0
-      local total = lL + lG + lS
+      -- players whose lifetime data was only received via sync.
+      local pts = localPts or syncedPts
+      local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
+      local gInfo = memberSet[Lower(name)]
       table.insert(leaders, {
         name = name, total = total,
-        L = lL, G = lG, S = lS,
-        class = guildInfo.class or "Unknown"
+        L = pts and (pts.L or 0) or 0,
+        G = pts and (pts.G or 0) or 0,
+        S = pts and (pts.S or 0) or 0,
+        class = (gInfo and gInfo.class) or "Unknown"
       })
     end
   end
