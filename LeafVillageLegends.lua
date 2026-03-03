@@ -5942,9 +5942,9 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     for name, _ in pairs(seen) do
       local localPts  = localWeek[name]
       local syncedPts = syncedWeek[name]
-      -- LOCAL first: prefer AggForThisWeek(); fall back to lboard cache for
-      -- players not witnessed locally this week.
-      local pts = localPts or syncedPts
+      -- SYNCED first: prefer lboard cache (ground truth from each player's own
+      -- client); fall back to local AggForThisWeek() only when no synced data exists.
+      local pts = syncedPts or localPts
       local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
       local gInfo = memberSet[Lower(name)]
       table.insert(leaders, {
@@ -5965,9 +5965,9 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
     for name, _ in pairs(seen) do
       local localPts  = LeafVE_DB.alltime[name]
       local syncedPts = LeafVE_DB.lboard.alltime[name]
-      -- LOCAL first: prefer LeafVE_DB.alltime; fall back to lboard cache for
-      -- players whose lifetime data was only received via sync.
-      local pts = localPts or syncedPts
+      -- SYNCED first: prefer lboard cache (ground truth from each player's own
+      -- client); fall back to LeafVE_DB.alltime only when no synced data exists.
+      local pts = syncedPts or localPts
       local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
       local gInfo = memberSet[Lower(name)]
       table.insert(leaders, {
@@ -9019,8 +9019,8 @@ function LeafVE.UI:Refresh()
         local name = guildInfo.name
         local localPts = localWeek[name]
         local syncedPts = syncedWeek and syncedWeek[name]
-        -- Local aggregation is authoritative; synced is fallback only when local is absent.
-        local pts = localPts or syncedPts
+        -- Synced data is ground truth; local aggregation is fallback only when synced is absent.
+        local pts = syncedPts or localPts
         local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
         if total > 0 then
           table.insert(weekLeaders, {name = name, total = total})
