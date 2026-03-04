@@ -1072,7 +1072,13 @@ end
 -- trigger again on the next login.
 function LVE_ResetPlayerDB()
   local wipeApplied = (LeafVE_DB and LeafVE_DB.lastWipeApplied) or 0
-  LeafVE_DB = {}
+  if LeafVE_DB then
+    for k in pairs(LeafVE_DB) do
+      LeafVE_DB[k] = nil
+    end
+  else
+    LeafVE_DB = {}
+  end
   LeafVE_DB.lastWipeApplied = wipeApplied
   EnsureDB()
 end
@@ -1081,7 +1087,13 @@ end
 -- The new fullWipeVersion is returned so callers can broadcast it.
 function LVE_ResetGlobalDB()
   local newVersion = ((LeafVE_GlobalDB and LeafVE_GlobalDB.fullWipeVersion) or 0) + 1
-  LeafVE_GlobalDB = {}
+  if LeafVE_GlobalDB then
+    for k in pairs(LeafVE_GlobalDB) do
+      LeafVE_GlobalDB[k] = nil
+    end
+  else
+    LeafVE_GlobalDB = {}
+  end
   LeafVE_GlobalDB.fullWipeVersion = newVersion
   EnsureDB()
   return newVersion
