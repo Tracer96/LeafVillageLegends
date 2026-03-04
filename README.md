@@ -111,7 +111,6 @@ Restricted to guild leadership ranks (**Hokage**, **Sannin**, **Anbu**):
 | `/lve narrower` | Decrease UI width |
 | `/lve shoutout <name> [reason]` | Give a shoutout to a guild member |
 | `/lve reset` | **Admin only** — prompt a guild-wide Leaf Points & achievement reset |
-| `/lve syncoffline` | **Admin only** — re-broadcast all known player data to help old-version members appear on the leaderboard |
 | `/lve uireset` | Reset UI size to default |
 
 ### UI Tabs
