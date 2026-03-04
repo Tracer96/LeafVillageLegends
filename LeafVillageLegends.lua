@@ -7384,6 +7384,82 @@ local function BuildAdminPanel(panel)
   end)
   yBase = yBase - 34
 
+  -- Helper: Build a set of ALL guild member names (online and offline)
+  local function LVL_GetAllGuildMembers()
+    local members = {}
+    GuildRoster() -- Refresh roster data
+    local numTotal = GetNumGuildMembers(true) -- true = include offline members
+    for i = 1, numTotal do
+      local name = GetGuildRosterInfo(i)
+      if name then
+        -- Strip server suffix if present (e.g. "Player-ServerName" -> "Player")
+        name = ShortName(name) or name
+        members[name] = true
+      end
+    end
+    return members
+  end
+
+  local function LVL_AdminWipeLeaderboardData()
+    EnsureDB()
+    local allMembers = LVL_GetAllGuildMembers()
+    -- Wipe leaderboard entries for every guild member (online and offline)
+    if LeafVE_DB.lboard then
+      -- Clear all-time leaderboard cache
+      if LeafVE_DB.lboard.alltime then
+        for name in pairs(LeafVE_DB.lboard.alltime) do
+          if allMembers[name] then
+            LeafVE_DB.lboard.alltime[name] = nil
+          end
+        end
+      end
+      -- Clear weekly leaderboard cache
+      if LeafVE_DB.lboard.weekly then
+        for wk, wkData in pairs(LeafVE_DB.lboard.weekly) do
+          if type(wkData) == "table" then
+            for name in pairs(wkData) do
+              if allMembers[name] then
+                wkData[name] = nil
+              end
+            end
+          end
+        end
+      end
+      -- Clear season leaderboard cache
+      if LeafVE_DB.lboard.season then
+        for name in pairs(LeafVE_DB.lboard.season) do
+          if allMembers[name] then
+            LeafVE_DB.lboard.season[name] = nil
+          end
+        end
+      end
+      -- Clear updatedAt cache entries
+      if LeafVE_DB.lboard.updatedAt then
+        for name in pairs(LeafVE_DB.lboard.updatedAt) do
+          if allMembers[name] then
+            LeafVE_DB.lboard.updatedAt[name] = nil
+          end
+        end
+      end
+    end
+    -- Also wipe the stored all-time and season point data for all guild members
+    if LeafVE_DB.alltime then
+      for name in pairs(LeafVE_DB.alltime) do
+        if allMembers[name] then
+          LeafVE_DB.alltime[name] = nil
+        end
+      end
+    end
+    if LeafVE_DB.season then
+      for name in pairs(LeafVE_DB.season) do
+        if allMembers[name] then
+          LeafVE_DB.season[name] = nil
+        end
+      end
+    end
+    Print("|cffFF6600[LVL Admin]|r Leaderboard data wiped for all guild members.")
+  end
+
   -- "Wipe Leaderboard Data" button
   local wipeLboardBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
   wipeLboardBtn:SetWidth(200)
@@ -7412,7 +7488,7 @@ local function BuildAdminPanel(panel)
       warningText:SetPoint("TOP", cf, "TOP", 0, -16)
       warningText:SetWidth(340)
       warningText:SetJustifyH("CENTER")
-      warningText:SetText("|cFFFF6600This will permanently wipe all local leaderboard\ndata (all-time, weekly, season rankings).\nThis only affects your client. Cannot be undone.|r")
+      warningText:SetText("|cFFFF6600This will permanently wipe leaderboard data\n(all-time, weekly, season rankings) for ALL\nguild members, including offline. Cannot be undone.|r")
 
       local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
       confirmBtn:SetWidth(120)
@@ -7420,8 +7496,7 @@ local function BuildAdminPanel(panel)
       confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
       confirmBtn:SetText("Confirm Wipe")
       confirmBtn:SetScript("OnClick", function()
-        EnsureDB()
-        LeafVE_DB.lboard = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
+        LVL_AdminWipeLeaderboardData()
         -- Refresh leaderboard panels if open
         if LeafVE.UI and LeafVE.UI.panels then
           if LeafVE.UI.panels.leaderWeek and LeafVE.UI.panels.leaderWeek:IsVisible() then
@@ -7434,7 +7509,6 @@ local function BuildAdminPanel(panel)
             LeafVE.UI:Refresh()
           end
         end
-        Print("|cffFF6600[LVL Admin]|r Leaderboard data has been wiped.")
         cf:Hide()
       end)
 
