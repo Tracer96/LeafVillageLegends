@@ -20,14 +20,14 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "11.7"
+LeafVE.version = "11.8"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
 LeafVE.minCompatVersion = "11.7"
 
 -- The latest published version; used to detect when the running addon is outdated.
-local LATEST_VERSION = "11.7"
+local LATEST_VERSION = "11.8"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
@@ -724,6 +724,7 @@ local function EnsureDB()
   if not LeafVE_GlobalDB.achievementCache then LeafVE_GlobalDB.achievementCache = {} end
   if not LeafVE_GlobalDB.gearCache then LeafVE_GlobalDB.gearCache = {} end
   if not LeafVE_GlobalDB.globalLeafResetAt then LeafVE_GlobalDB.globalLeafResetAt = 0 end
+  if not LeafVE_GlobalDB.fullWipeVersion then LeafVE_GlobalDB.fullWipeVersion = 0 end
   if LeafVE_DB.options.groupPoints == nil then LeafVE_DB.options.groupPoints = GROUP_POINTS end
   if LeafVE_DB.options.loginPoints == nil then LeafVE_DB.options.loginPoints = 20 end
 end
@@ -1064,6 +1065,26 @@ function LeafVE:ResetAllData_Local()
   LeafVE_DB       = {}
   LeafVE_GlobalDB = {}
   ReloadUI()
+end
+
+-- Resets all point/badge/history fields on the local player's LeafVE_DB while
+-- preserving the lastWipeApplied stamp so the login-stamp check does not
+-- trigger again on the next login.
+function LVE_ResetPlayerDB()
+  local wipeApplied = (LeafVE_DB and LeafVE_DB.lastWipeApplied) or 0
+  LeafVE_DB = {}
+  LeafVE_DB.lastWipeApplied = wipeApplied
+  EnsureDB()
+end
+
+-- Increments the global wipe counter and clears all shared leaderboard data.
+-- The new fullWipeVersion is returned so callers can broadcast it.
+function LVE_ResetGlobalDB()
+  local newVersion = ((LeafVE_GlobalDB and LeafVE_GlobalDB.fullWipeVersion) or 0) + 1
+  LeafVE_GlobalDB = {}
+  LeafVE_GlobalDB.fullWipeVersion = newVersion
+  EnsureDB()
+  return newVersion
 end
 
 -- Confirmation popup for the per-user "Reset All Data" feature.
@@ -2535,6 +2556,28 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
         LVL_ExecuteLocalLboardWipe()
         LeafVE_DB.lboard.wipeAt = wipeTime
         Print("|cff00ff00[Leaf Village Legends]|r Leaderboard data wiped by guild admin.")
+        if LeafVE.UI and LeafVE.UI.Refresh then LeafVE.UI:Refresh() end
+      end
+    end
+    return
+  end
+
+  -- Handle full data wipe broadcast (all points, badges, history, leaderboards)
+  if string.sub(message, 1, 10) == "FULL_WIPE:" then
+    local wipeVersion = tonumber(string.sub(message, 11)) or 0
+    if wipeVersion > 0 then
+      -- Validate that the sender holds an admin guild rank
+      self:UpdateGuildRosterCache()
+      local senderInfo = self.guildRosterCache[Lower(sender)]
+      local senderRank = senderInfo and senderInfo.rank
+      local isAdmin = senderRank and ADMIN_RANKS[Lower(Trim(senderRank))] == true
+      if not isAdmin then return end
+      EnsureDB()
+      if wipeVersion > (LeafVE_GlobalDB.fullWipeVersion or 0) then
+        LeafVE_GlobalDB.fullWipeVersion = wipeVersion
+        LVE_ResetPlayerDB()
+        LeafVE_DB.lastWipeApplied = wipeVersion
+        Print("|cff00ff00[LVL]|r Your Leaf Point data has been reset by a guild admin.")
         if LeafVE.UI and LeafVE.UI.Refresh then LeafVE.UI:Refresh() end
       end
     end
@@ -7527,6 +7570,77 @@ local function BuildAdminPanel(panel)
     end
     LeafVE._confirmWipeLboardFrame:Show()
   end)
+  yBase = yBase - 34
+
+  -- "⚠ FULL DATA WIPE" button (official season reset — wipes ALL data)
+  local fullWipeBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  fullWipeBtn:SetWidth(240)
+  fullWipeBtn:SetHeight(22)
+  fullWipeBtn:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  fullWipeBtn:SetText("|cFFFF2222⚠ FULL DATA WIPE (Official Reset)|r")
+  SkinButtonAccent(fullWipeBtn)
+  fullWipeBtn:SetScript("OnEnter", function()
+    GameTooltip:SetOwner(fullWipeBtn, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Wipes ALL Leaf Points, badges, history, and leaderboard data\nfor every guild member including offline players.\nOffline members are auto-wiped on next login.\nUse only for official season resets.", nil, nil, nil, nil, true)
+    GameTooltip:Show()
+  end)
+  fullWipeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  fullWipeBtn:SetScript("OnClick", function()
+    if not LeafVE._confirmFullWipeFrame then
+      local cf = CreateFrame("Frame", "LeafVE_ConfirmFullWipe", UIParent)
+      cf:SetWidth(420)
+      cf:SetHeight(140)
+      cf:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+      cf:SetFrameStrata("DIALOG")
+      cf:EnableMouse(true)
+      cf:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = {left = 4, right = 4, top = 4, bottom = 4}
+      })
+      cf:SetBackdropColor(0.15, 0.0, 0.0, 0.98)
+      cf:SetBackdropBorderColor(1.0, 0.0, 0.0, 1)
+
+      local warningText = cf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      warningText:SetPoint("TOP", cf, "TOP", 0, -16)
+      warningText:SetWidth(380)
+      warningText:SetJustifyH("CENTER")
+      warningText:SetText("|cFFFF2222⚠ TOTAL WIPE: This will erase ALL Leaf Points, badges,\nhistory, and leaderboard data for EVERY guild member.\nOffline members will be wiped on next login.\nThis cannot be undone. Are you sure?|r")
+
+      local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      confirmBtn:SetWidth(140)
+      confirmBtn:SetHeight(22)
+      confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
+      confirmBtn:SetText("|cFFFF2222Confirm Full Wipe|r")
+      confirmBtn:SetScript("OnClick", function()
+        -- 1. Reset GlobalDB and get the new wipe version
+        local newVersion = LVE_ResetGlobalDB()
+        -- 2. Reset the local player's own DB (preserve the new stamp)
+        LVE_ResetPlayerDB()
+        LeafVE_DB.lastWipeApplied = newVersion
+        -- 3. Broadcast to all online guild members
+        if InGuild() then
+          SendAddonMessage("LeafVE", "FULL_WIPE:" .. newVersion, "GUILD")
+        end
+        -- 4. Refresh UI
+        if LeafVE.UI and LeafVE.UI.Refresh then LeafVE.UI:Refresh() end
+        Print("|cff00ff00[LVL]|r ⚠ Full data wipe complete. All Leaf Points and data have been reset!")
+        cf:Hide()
+      end)
+
+      local cancelBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      cancelBtn:SetWidth(80)
+      cancelBtn:SetHeight(22)
+      cancelBtn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -20, 14)
+      cancelBtn:SetText("Cancel")
+      cancelBtn:SetScript("OnClick", function() cf:Hide() end)
+
+      cf:Hide()
+      LeafVE._confirmFullWipeFrame = cf
+    end
+    LeafVE._confirmFullWipeFrame:Show()
+  end)
 
   panel.adminSubFrame = subFrame
   -- Set the scroll child height and update scrollbar range
@@ -9502,6 +9616,12 @@ ef:SetScript("OnEvent", function()
     if (LeafVE_GlobalDB.globalLeafResetAt or 0) > (LeafVE_DB.lastLeafResetAt or 0) then
       LeafVE:HardResetLeafPoints_Local()
       Print("|cFFFF4444Leaf Points were reset by an admin while you were offline. Your data has been wiped.|r")
+    end
+    -- Apply a pending full data wipe (all points/badges/history) for offline members
+    if (LeafVE_GlobalDB.fullWipeVersion or 0) > (LeafVE_DB.lastWipeApplied or 0) then
+      LVE_ResetPlayerDB()
+      LeafVE_DB.lastWipeApplied = LeafVE_GlobalDB.fullWipeVersion
+      Print("|cFFFFD700[LVL]|r Your Leaf Point data was reset by a guild admin. Welcome to the new season!")
     end
     LeafVE:CheckDailyLogin()
     LeafVE:PurgeStaleWeeklyData()

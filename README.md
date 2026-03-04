@@ -76,6 +76,7 @@ Restricted to guild leadership ranks (**Hokage**, **Sannin**, **Anbu**):
 - Version check across all online guild members.
 - Hard reset leaderboards, badges, or achievement data.
 - **Wipe Leaderboard Data** — wipes leaderboard data (all-time, weekly, season rankings) for **all guild members**, including offline members. A confirmation dialog is shown before wiping.
+- **Full Data Wipe** — Wipes ALL data (points, badges, history, leaderboards) for every guild member including offline players. Offline members are auto-wiped on next login via a login stamp. A double-confirmation dialog is shown before wiping.
 - Award or remove badges from individual players.
 
 ### 🔗 Data Sync
@@ -175,7 +176,9 @@ Only **Hokage**, **Sannin**, and **Anbu** ranks can access the Admin panel.
 | Variable | Scope | Description |
 |----------|-------|-------------|
 | `LeafVE_DB` | Per-Character | Points, badges, options, history, and UI settings |
+| `LeafVE_DB.lastWipeApplied` | Per-Character | Wipe version stamp — prevents re-applying a full data wipe on subsequent logins |
 | `LeafVE_GlobalDB` | Account-Wide | Shared data across all characters |
+| `LeafVE_GlobalDB.fullWipeVersion` | Account-Wide | Incrementing counter for full data wipes; offline members are auto-wiped on login when this exceeds their `lastWipeApplied` |
 
 ---
 
