@@ -8,3 +8,4 @@
 ## OptionalDeps: 
 
 LeafVillageLegends.lua
+LeafVE_FullWipe.lua
