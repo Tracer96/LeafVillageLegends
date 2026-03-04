@@ -75,6 +75,7 @@ Restricted to guild leadership ranks (**Hokage**, **Sannin**, **Anbu**):
 - **Announce Weekly Standings** to guild chat with one click — preview top 5 standings before announcing.
 - Version check across all online guild members.
 - Hard reset leaderboards, badges, or achievement data.
+- **Wipe Leaderboard Data** — wipes all local leaderboard cache (all-time, weekly, season rankings) from your client only. Works offline; no guild message is sent. A confirmation dialog is shown before wiping.
 - Award or remove badges from individual players.
 
 ### 🔗 Data Sync

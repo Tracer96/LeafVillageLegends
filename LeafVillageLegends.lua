@@ -7076,10 +7076,18 @@ local function BuildAdminPanel(panel)
   yBase = yBase - 90
 
   local function BuildStandingsLines()
-    local weekAgg = AggForThisWeek()
+    local wk = WeekKey()
+    local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
+    local localWeek = AggForThisWeek()
+    local seen = {}
+    for name, _ in pairs(localWeek) do seen[name] = true end
+    for name, _ in pairs(syncedWeek) do seen[name] = true end
     local sorted = {}
-    for name, pts in pairs(weekAgg) do
-      local total = (pts.L or 0) + (pts.G or 0) + (pts.S or 0)
+    for name, _ in pairs(seen) do
+      local localPts  = localWeek[name]
+      local syncedPts = syncedWeek[name]
+      local pts = syncedPts or localPts
+      local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
       if total > 0 then
         table.insert(sorted, {name = name, total = total})
       end
@@ -7373,6 +7381,74 @@ local function BuildAdminPanel(panel)
       LeafVE._confirmResetAchFrame = cf
     end
     LeafVE._confirmResetAchFrame:Show()
+  end)
+  yBase = yBase - 34
+
+  -- "Wipe Leaderboard Data" button
+  local wipeLboardBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  wipeLboardBtn:SetWidth(200)
+  wipeLboardBtn:SetHeight(22)
+  wipeLboardBtn:SetPoint("TOPLEFT", subFrame, "TOPLEFT", 12, yBase)
+  wipeLboardBtn:SetText("|cFFFF6600Wipe Leaderboard Data|r")
+  SkinButtonAccent(wipeLboardBtn)
+  wipeLboardBtn:SetScript("OnClick", function()
+    if not LeafVE._confirmWipeLboardFrame then
+      local cf = CreateFrame("Frame", "LeafVE_ConfirmWipeLboard", UIParent)
+      cf:SetWidth(380)
+      cf:SetHeight(130)
+      cf:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+      cf:SetFrameStrata("DIALOG")
+      cf:EnableMouse(true)
+      cf:SetBackdrop({
+        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+        tile = true, tileSize = 16, edgeSize = 16,
+        insets = {left = 4, right = 4, top = 4, bottom = 4}
+      })
+      cf:SetBackdropColor(0.1, 0.04, 0.0, 0.97)
+      cf:SetBackdropBorderColor(1.0, 0.4, 0.0, 1)
+
+      local warningText = cf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+      warningText:SetPoint("TOP", cf, "TOP", 0, -16)
+      warningText:SetWidth(340)
+      warningText:SetJustifyH("CENTER")
+      warningText:SetText("|cFFFF6600This will permanently wipe all local leaderboard\ndata (all-time, weekly, season rankings).\nThis only affects your client. Cannot be undone.|r")
+
+      local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      confirmBtn:SetWidth(120)
+      confirmBtn:SetHeight(22)
+      confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
+      confirmBtn:SetText("Confirm Wipe")
+      confirmBtn:SetScript("OnClick", function()
+        EnsureDB()
+        LeafVE_DB.lboard = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
+        -- Refresh leaderboard panels if open
+        if LeafVE.UI and LeafVE.UI.panels then
+          if LeafVE.UI.panels.leaderWeek and LeafVE.UI.panels.leaderWeek:IsVisible() then
+            LeafVE.UI:RefreshLeaderboard("leaderWeek")
+          end
+          if LeafVE.UI.panels.leaderLife and LeafVE.UI.panels.leaderLife:IsVisible() then
+            LeafVE.UI:RefreshLeaderboard("leaderLife")
+          end
+          if LeafVE.UI.panels.me and LeafVE.UI.panels.me:IsVisible() then
+            LeafVE.UI:Refresh()
+          end
+        end
+        Print("|cffFF6600[LVL Admin]|r Leaderboard data has been wiped.")
+        cf:Hide()
+      end)
+
+      local cancelBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
+      cancelBtn:SetWidth(80)
+      cancelBtn:SetHeight(22)
+      cancelBtn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -20, 14)
+      cancelBtn:SetText("Cancel")
+      cancelBtn:SetScript("OnClick", function() cf:Hide() end)
+
+      cf:Hide()
+      LeafVE._confirmWipeLboardFrame = cf
+    end
+    LeafVE._confirmWipeLboardFrame:Show()
   end)
 
   panel.adminSubFrame = subFrame
@@ -8944,25 +9020,29 @@ function LeafVE.UI:Refresh()
     end
    end
     
-    -- Calculate All-Time Leader
+    -- Calculate All-Time Leader (union of local alltime and synced lboard.alltime)
     if self.panels.me.alltimeLeader then
       local leader = nil
       local maxPoints = 0
-      
-      for name, pts in pairs(LeafVE_DB.alltime) do
-        local total = (pts.L or 0) + (pts.G or 0) + (pts.S or 0)
+      local seen = {}
+      for name, _ in pairs(LeafVE_DB.alltime) do seen[name] = true end
+      for name, _ in pairs(LeafVE_DB.lboard.alltime) do seen[name] = true end
+      for name, _ in pairs(seen) do
+        local localPts  = LeafVE_DB.alltime[name]
+        local syncedPts = LeafVE_DB.lboard.alltime[name]
+        local pts = syncedPts or localPts
+        local total = pts and ((pts.L or 0) + (pts.G or 0) + (pts.S or 0)) or 0
         if total > maxPoints then
           maxPoints = total
           leader = name
         end
       end
-      
-    if leader then
-      self.panels.me.alltimeLeader:SetText(string.format("%s with |cFFFFD700%d points|r", leader, maxPoints))
-    else
-      self.panels.me.alltimeLeader:SetText("|cFF888888No data available|r")
+      if leader then
+        self.panels.me.alltimeLeader:SetText(string.format("%s with |cFFFFD700%d points|r", leader, maxPoints))
+      else
+        self.panels.me.alltimeLeader:SetText("|cFF888888No data available|r")
+      end
     end
-   end
 
     -- Refresh Season Rewards display
     if self.panels.me.seasonRewards then
