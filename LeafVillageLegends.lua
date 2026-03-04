@@ -1114,6 +1114,31 @@ StaticPopupDialogs["LVL_CONFIRM_RESET_ALL"] = {
   hideOnEscape = true,
 }
 
+-- Double-confirmation dialogs for the admin "FULL DATA WIPE" button.
+StaticPopupDialogs["LEAFVE_CONFIRM_FULL_WIPE_2"] = {
+  text = "|cffff0000ARE YOU ABSOLUTELY SURE?|r This will wipe ALL points, badges, and history for EVERY guild member including offline players. This cannot be undone.",
+  button1 = "YES, WIPE EVERYTHING",
+  button2 = "Cancel",
+  OnAccept = function()
+    LeafVE_AdminDoFullWipe()
+  end,
+  timeout = 0,
+  whileDead = 1,
+  hideOnEscape = 1,
+}
+
+StaticPopupDialogs["LEAFVE_CONFIRM_FULL_WIPE_1"] = {
+  text = "Are you sure you want to perform a FULL DATA WIPE for all guild members?",
+  button1 = "Yes, continue",
+  button2 = "Cancel",
+  OnAccept = function()
+    StaticPopup_Show("LEAFVE_CONFIRM_FULL_WIPE_2")
+  end,
+  timeout = 0,
+  whileDead = 1,
+  hideOnEscape = 1,
+}
+
 function LeafVE:GetHistory(playerName, limit)
   EnsureDB() playerName = ShortName(playerName) if not playerName then return {} end
   local history = LeafVE_DB.pointHistory[playerName] or {} local sorted = {}
@@ -7598,60 +7623,7 @@ local function BuildAdminPanel(panel)
   end)
   fullWipeBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
   fullWipeBtn:SetScript("OnClick", function()
-    if not LeafVE._confirmFullWipeFrame then
-      local cf = CreateFrame("Frame", "LeafVE_ConfirmFullWipe", UIParent)
-      cf:SetWidth(420)
-      cf:SetHeight(140)
-      cf:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
-      cf:SetFrameStrata("DIALOG")
-      cf:EnableMouse(true)
-      cf:SetBackdrop({
-        bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 16,
-        insets = {left = 4, right = 4, top = 4, bottom = 4}
-      })
-      cf:SetBackdropColor(0.15, 0.0, 0.0, 0.98)
-      cf:SetBackdropBorderColor(1.0, 0.0, 0.0, 1)
-
-      local warningText = cf:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-      warningText:SetPoint("TOP", cf, "TOP", 0, -16)
-      warningText:SetWidth(380)
-      warningText:SetJustifyH("CENTER")
-      warningText:SetText("|cFFFF2222⚠ TOTAL WIPE: This will erase ALL Leaf Points, badges,\nhistory, and leaderboard data for EVERY guild member.\nOffline members will be wiped on next login.\nThis cannot be undone. Are you sure?|r")
-
-      local confirmBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
-      confirmBtn:SetWidth(140)
-      confirmBtn:SetHeight(22)
-      confirmBtn:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 20, 14)
-      confirmBtn:SetText("|cFFFF2222Confirm Full Wipe|r")
-      confirmBtn:SetScript("OnClick", function()
-        -- 1. Reset GlobalDB and get the new wipe version
-        local newVersion = LVE_ResetGlobalDB()
-        -- 2. Reset the local player's own DB (preserve the new stamp)
-        LVE_ResetPlayerDB()
-        LeafVE_DB.lastWipeApplied = newVersion
-        -- 3. Broadcast to all online guild members
-        if InGuild() then
-          SendAddonMessage("LeafVE", "FULL_WIPE:" .. newVersion, "GUILD")
-        end
-        -- 4. Refresh UI
-        if LeafVE.UI and LeafVE.UI.Refresh then LeafVE.UI:Refresh() end
-        Print("|cff00ff00[LVL]|r ⚠ Full data wipe complete. All Leaf Points and data have been reset!")
-        cf:Hide()
-      end)
-
-      local cancelBtn = CreateFrame("Button", nil, cf, "UIPanelButtonTemplate")
-      cancelBtn:SetWidth(80)
-      cancelBtn:SetHeight(22)
-      cancelBtn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -20, 14)
-      cancelBtn:SetText("Cancel")
-      cancelBtn:SetScript("OnClick", function() cf:Hide() end)
-
-      cf:Hide()
-      LeafVE._confirmFullWipeFrame = cf
-    end
-    LeafVE._confirmFullWipeFrame:Show()
+    StaticPopup_Show("LEAFVE_CONFIRM_FULL_WIPE_1")
   end)
 
   panel.adminSubFrame = subFrame
