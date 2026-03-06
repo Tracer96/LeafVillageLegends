@@ -830,6 +830,7 @@ local function EnsureDB()
   if not LeafVE_DB.badges then LeafVE_DB.badges = {} end
   if not LeafVE_DB.badgesAnnounced then LeafVE_DB.badgesAnnounced = {} end
   if not LeafVE_DB.attendance then LeafVE_DB.attendance = {} end
+  if not LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate = {} end
   if not LeafVE_DB.weeklyRecap then LeafVE_DB.weeklyRecap = {} end
   if not LeafVE_DB.loginStreaks then LeafVE_DB.loginStreaks = {} end
   if not LeafVE_DB.persistentRoster then LeafVE_DB.persistentRoster = {} end
@@ -883,6 +884,7 @@ local function EnsureDB()
   if not LeafVE_GlobalDB.lboardCache then LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} } end
   if not LeafVE_GlobalDB.lboardCache.alltime then LeafVE_GlobalDB.lboardCache.alltime = {} end
   if not LeafVE_GlobalDB.lboardCache.weekly then LeafVE_GlobalDB.lboardCache.weekly = {} end
+  if not LeafVE_GlobalDB.badgeProgressCache then LeafVE_GlobalDB.badgeProgressCache = {} end
   if not LeafVE_GlobalDB.globalLeafResetAt then LeafVE_GlobalDB.globalLeafResetAt = 0 end
   if not LeafVE_GlobalDB.fullWipeVersion then LeafVE_GlobalDB.fullWipeVersion = 0 end
   if LeafVE_DB.options.groupPoints == nil then LeafVE_DB.options.groupPoints = GROUP_POINTS end
@@ -927,6 +929,226 @@ local function StoreLifetimeSnapshot(name, L, G, S, sourceName, authoritative, o
     end
     LeafVE_GlobalDB.lboardCache.alltime[name] = {L = L, G = G, S = S}
   end
+end
+
+local function GetBadgeProgressCacheEntry(playerName, createIfMissing)
+  EnsureDB()
+  local name = ShortName(playerName)
+  if not name then return nil, nil end
+
+  if not LeafVE_GlobalDB.badgeProgressCache then
+    LeafVE_GlobalDB.badgeProgressCache = {}
+  end
+
+  local entry = LeafVE_GlobalDB.badgeProgressCache[name]
+  if type(entry) ~= "table" then
+    if not createIfMissing then
+      return name, nil
+    end
+    entry = {}
+    LeafVE_GlobalDB.badgeProgressCache[name] = entry
+  end
+
+  return name, entry
+end
+
+local function GetCachedProgressNumber(playerName, field)
+  local _, cache = GetBadgeProgressCacheEntry(playerName, false)
+  if type(cache) ~= "table" then return 0 end
+  return tonumber(cache[field]) or 0
+end
+
+local function GetBestLifetimeEntry(playerName)
+  EnsureDB()
+  local name = ShortName(playerName)
+  if not name then return {L = 0, G = 0, S = 0} end
+
+  local best = nil
+  local function Consider(entry)
+    if type(entry) ~= "table" then return end
+    local normalized = {
+      L = tonumber(entry.L) or 0,
+      G = tonumber(entry.G) or 0,
+      S = tonumber(entry.S) or 0,
+    }
+    if LboardEntryTotal(normalized) <= 0 then return end
+    if not best or LboardEntryTotal(normalized) > LboardEntryTotal(best) then
+      best = normalized
+    end
+  end
+
+  Consider(LeafVE_DB.alltime and LeafVE_DB.alltime[name])
+  Consider(LeafVE_DB.lboard and LeafVE_DB.lboard.alltime and LeafVE_DB.lboard.alltime[name])
+  Consider(LeafVE_GlobalDB.lboardCache and LeafVE_GlobalDB.lboardCache.alltime and LeafVE_GlobalDB.lboardCache.alltime[name])
+  local progressCache = LeafVE_GlobalDB.badgeProgressCache and LeafVE_GlobalDB.badgeProgressCache[name]
+  Consider(progressCache and progressCache.alltime)
+
+  return best or {L = 0, G = 0, S = 0}
+end
+
+local function GetBestGuildieGroupHours(playerName)
+  local name = ShortName(playerName)
+  if not name then return 0 end
+
+  local localHours = (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0
+  local cachedHours = GetCachedProgressNumber(name, "guildieGroupHours")
+  if cachedHours > localHours then
+    if not LeafVE_DB.guildieGroupHours then LeafVE_DB.guildieGroupHours = {} end
+    LeafVE_DB.guildieGroupHours[name] = cachedHours
+    return cachedHours
+  end
+  return localHours
+end
+
+local function GetBestAttendanceCount(playerName)
+  local name = ShortName(playerName)
+  if not name then return 0 end
+
+  local attendance = (LeafVE_DB.attendance and LeafVE_DB.attendance[name]) or {}
+  local localCount = table.getn(attendance)
+  local cachedCount = GetCachedProgressNumber(name, "attendance")
+  if cachedCount > localCount then
+    if not LeafVE_DB.attendance then LeafVE_DB.attendance = {} end
+    if not LeafVE_DB.attendance[name] then LeafVE_DB.attendance[name] = {} end
+    while table.getn(LeafVE_DB.attendance[name]) < cachedCount do
+      table.insert(LeafVE_DB.attendance[name], {})
+    end
+    return cachedCount
+  end
+  return localCount
+end
+
+local function GetBestLoginStreak(playerName)
+  local name = ShortName(playerName)
+  if not name then return 0 end
+
+  local localStreak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
+  local cachedStreak = GetCachedProgressNumber(name, "loginStreak")
+  if cachedStreak > localStreak then
+    if not LeafVE_DB.loginStreaks then LeafVE_DB.loginStreaks = {} end
+    if not LeafVE_DB.loginStreaks[name] then
+      LeafVE_DB.loginStreaks[name] = {current = 0}
+    end
+    LeafVE_DB.loginStreaks[name].current = cachedStreak
+    return cachedStreak
+  end
+  return localStreak
+end
+
+local function GetBestGuildJoinDate(playerName)
+  local name = ShortName(playerName)
+  if not name then return 0 end
+
+  local localJoinDate = (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name]) or 0
+  local cachedJoinDate = GetCachedProgressNumber(name, "guildJoinDate")
+
+  if localJoinDate > 0 and cachedJoinDate > 0 then
+    local earliest = math.min(localJoinDate, cachedJoinDate)
+    if not LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate = {} end
+    LeafVE_DB.guildJoinDate[name] = earliest
+    return earliest
+  elseif cachedJoinDate > 0 then
+    if not LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate = {} end
+    LeafVE_DB.guildJoinDate[name] = cachedJoinDate
+    return cachedJoinDate
+  end
+
+  return localJoinDate
+end
+
+local function AggregateGlobalTotalsForPlayer(playerName)
+  EnsureDB()
+  local name = ShortName(playerName)
+  if not name then return {L = 0, G = 0, S = 0} end
+
+  local totals = {L = 0, G = 0, S = 0}
+  for _, dayData in pairs(LeafVE_DB.global or {}) do
+    if type(dayData) == "table" then
+      local entry = dayData[name]
+      if type(entry) == "table" then
+        totals.L = totals.L + (tonumber(entry.L) or 0)
+        totals.G = totals.G + (tonumber(entry.G) or 0)
+        totals.S = totals.S + (tonumber(entry.S) or 0)
+      end
+    end
+  end
+
+  return totals
+end
+
+local function ResolveLifetimeEntryForDisplay(playerName)
+  EnsureDB()
+  local name = ShortName(playerName)
+  if not name then return {L = 0, G = 0, S = 0} end
+
+  local me = ShortName(UnitName("player"))
+  local wk = WeekKey()
+  local syncedWeek = (type(LeafVE_DB.lboard.weekly[wk]) == "table") and LeafVE_DB.lboard.weekly[wk] or {}
+  local localWeek = AggForThisWeek()
+
+  local localPts  = LeafVE_DB.alltime[name]
+  local syncedPts = LeafVE_DB.lboard.alltime[name]
+  local lifeMeta = LeafVE_DB.lboard.updatedAt[name]
+  local syncedIsAuthoritative = (type(lifeMeta) == "table" and lifeMeta.lifetimeAuthoritative == true)
+  local pts = syncedIsAuthoritative and syncedPts or nil
+  if not SamePlayerName(name, me) then
+    localPts = nil
+  end
+  if LboardEntryTotal(localPts) > LboardEntryTotal(pts) then
+    pts = localPts
+  end
+  local weekPts = syncedWeek[name] or localWeek[name]
+  if LboardEntryTotal(weekPts) > LboardEntryTotal(pts) then
+    pts = weekPts
+  end
+
+  return {
+    L = pts and (pts.L or 0) or 0,
+    G = pts and (pts.G or 0) or 0,
+    S = pts and (pts.S or 0) or 0,
+  }
+end
+
+function LeafVE:CacheBadgeProgress(playerName)
+  EnsureDB()
+  local name, cache = GetBadgeProgressCacheEntry(playerName, true)
+  if not name or type(cache) ~= "table" then return end
+
+  local alltime = GetBestLifetimeEntry(name)
+  cache.alltime = {
+    L = alltime.L or 0,
+    G = alltime.G or 0,
+    S = alltime.S or 0,
+  }
+
+  local groupSessions = (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[name]) or 0
+  if groupSessions > (cache.groupSessions or 0) then
+    cache.groupSessions = groupSessions
+  end
+
+  local guildieHours = (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0
+  if guildieHours > (cache.guildieGroupHours or 0) then
+    cache.guildieGroupHours = guildieHours
+  end
+
+  local attendanceCount = table.getn((LeafVE_DB.attendance and LeafVE_DB.attendance[name]) or {})
+  if attendanceCount > (cache.attendance or 0) then
+    cache.attendance = attendanceCount
+  end
+
+  local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
+  if streak > (cache.loginStreak or 0) then
+    cache.loginStreak = streak
+  end
+
+  local joinDate = (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name]) or 0
+  if joinDate > 0 then
+    if not cache.guildJoinDate or cache.guildJoinDate <= 0 or joinDate < cache.guildJoinDate then
+      cache.guildJoinDate = joinDate
+    end
+  end
+
+  cache.updatedAt = Now()
 end
 
 function LeafVE:UpsertSharedLeaderboard(name, lifetimeEntry, weeklyEntry, wk)
@@ -1130,7 +1352,12 @@ function LeafVE:ResetBadges(playerName)
   LeafVE_DB.loginStreaks[playerName] = nil
   LeafVE_DB.loginTracking[playerName] = nil
   LeafVE_DB.groupSessions[playerName] = nil
+  LeafVE_DB.groupPointsToday[playerName] = nil
+  LeafVE_DB.guildieGroupHours[playerName] = nil
   LeafVE_DB.attendance[playerName] = nil
+  if LeafVE_DB.guildJoinDate then
+    LeafVE_DB.guildJoinDate[playerName] = nil
+  end
   LeafVE_DB.pointHistory[playerName] = nil
   LeafVE_DB.instanceTracking[playerName] = nil
   LeafVE_DB.questTracking[playerName] = nil
@@ -1148,6 +1375,19 @@ function LeafVE:ResetBadges(playerName)
   LeafVE_DB.shoutouts[playerName] = nil
   if LeafVE_GlobalDB.achievementCache then
     LeafVE_GlobalDB.achievementCache[playerName] = nil
+  end
+  if LeafVE_GlobalDB.lboardCache then
+    if LeafVE_GlobalDB.lboardCache.alltime then
+      LeafVE_GlobalDB.lboardCache.alltime[playerName] = nil
+    end
+    if LeafVE_GlobalDB.lboardCache.weekly then
+      for _, wkData in pairs(LeafVE_GlobalDB.lboardCache.weekly) do
+        if type(wkData) == "table" then wkData[playerName] = nil end
+      end
+    end
+  end
+  if LeafVE_GlobalDB.badgeProgressCache then
+    LeafVE_GlobalDB.badgeProgressCache[playerName] = nil
   end
   Print("All badges reset for "..playerName..".")
   if InGuild() then
@@ -1173,15 +1413,20 @@ function LeafVE:ResetAllBadges()
   LeafVE_DB.loginTracking = {}
   LeafVE_DB.groupSessions = {}
   LeafVE_DB.groupCooldowns = {}
+  LeafVE_DB.groupPointsToday = {}
+  LeafVE_DB.guildieGroupHours = {}
   LeafVE_DB.shoutouts    = {}
   LeafVE_DB.attendance   = {}
+  LeafVE_DB.guildJoinDate = {}
   LeafVE_DB.pointHistory = {}
   LeafVE_DB.weeklyRecap  = {}
   LeafVE_DB.instanceTracking = {}
   LeafVE_DB.questTracking = {}
   LeafVE_DB.questCompletions = {}
   LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
+  LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} }
   LeafVE_GlobalDB.achievementCache = {}
+  LeafVE_GlobalDB.badgeProgressCache = {}
   if LeafVE_AchTest_DB and LeafVE_AchTest_DB.achievements then
     LeafVE_AchTest_DB.achievements = {}
   end
@@ -1213,13 +1458,17 @@ function LeafVE:HardResetLeafPoints_Local()
   LeafVE_DB.groupSessions = {}
   LeafVE_DB.groupCooldowns = {}
   LeafVE_DB.groupPointsToday = {}
+  LeafVE_DB.guildieGroupHours = {}
   LeafVE_DB.loginStreaks  = {}
   LeafVE_DB.loginTracking = {}
   LeafVE_DB.shoutouts    = {}
   LeafVE_DB.attendance   = {}
+  LeafVE_DB.guildJoinDate = {}
   LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
   if LeafVE_GlobalDB then
+    LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} }
     LeafVE_GlobalDB.achievementCache = {}
+    LeafVE_GlobalDB.badgeProgressCache = {}
   end
   -- Record reset timestamp so offline characters on the same account are also wiped on login
   LeafVE_DB.lastLeafResetAt = resetNow
@@ -1241,6 +1490,8 @@ local function LVL_ExecuteLocalLboardWipe()
   LeafVE_DB.lboard.updatedAt = {}
   LeafVE_DB.alltime          = {}
   LeafVE_DB.season           = {}
+  LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} }
+  LeafVE_GlobalDB.badgeProgressCache = {}
 end
 
 -- Wipes all saved data for the current player (account-wide).
@@ -1263,6 +1514,7 @@ function LeafVE:ResetMyData()
   LeafVE_DB.groupSessions[me]      = nil
   LeafVE_DB.groupPointsToday[me]   = nil
   LeafVE_DB.guildieGroupHours[me]  = nil
+  if LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate[me] = nil end
   LeafVE_DB.attendance[me]         = nil
   LeafVE_DB.pointHistory[me]       = nil
   LeafVE_DB.instanceTracking[me]   = nil
@@ -1291,6 +1543,19 @@ function LeafVE:ResetMyData()
   -- Clear account-wide (GlobalDB) entries for this player.
   if LeafVE_GlobalDB.achievementCache then
     LeafVE_GlobalDB.achievementCache[me] = nil
+  end
+  if LeafVE_GlobalDB.lboardCache then
+    if LeafVE_GlobalDB.lboardCache.alltime then
+      LeafVE_GlobalDB.lboardCache.alltime[me] = nil
+    end
+    if LeafVE_GlobalDB.lboardCache.weekly then
+      for _, wkData in pairs(LeafVE_GlobalDB.lboardCache.weekly) do
+        if type(wkData) == "table" then wkData[me] = nil end
+      end
+    end
+  end
+  if LeafVE_GlobalDB.badgeProgressCache then
+    LeafVE_GlobalDB.badgeProgressCache[me] = nil
   end
   if LeafVE_GlobalDB.gearCache then
     LeafVE_GlobalDB.gearCache[Lower(me)] = nil
@@ -1520,8 +1785,11 @@ function LeafVE:CheckBadgeMilestones(playerName)
   playerName = ShortName(playerName)
   if not playerName then return end
   
-  -- Get player data
-  local alltime = LeafVE_DB.alltime[playerName] or {L = 0, G = 0, S = 0}
+  -- Get player data (prefer the highest cached all-time snapshot)
+  local alltime = GetBestLifetimeEntry(playerName)
+  if LboardEntryTotal(alltime) > LboardEntryTotal(LeafVE_DB.alltime[playerName]) then
+    LeafVE_DB.alltime[playerName] = {L = alltime.L or 0, G = alltime.G or 0, S = alltime.S or 0}
+  end
   local totalPoints = (alltime.L or 0) + (alltime.G or 0) + (alltime.S or 0)
   
   -- === LOGIN & ACTIVITY ===
@@ -1535,22 +1803,20 @@ function LeafVE:CheckBadgeMilestones(playerName)
     self:CheckAndAwardBadge(playerName, "total_logins_365")
   end
   
-  -- Login streaks (check if you have streak tracking)
-  if LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[playerName] then
-    local streak = LeafVE_DB.loginStreaks[playerName].current or 0
-    if streak >= 7 then 
-      self:CheckAndAwardBadge(playerName, "login_streak_7") 
-    end
-    if streak >= 30 then 
-      self:CheckAndAwardBadge(playerName, "login_streak_30") 
-    end
-    if streak >= 100 then
-      self:CheckAndAwardBadge(playerName, "login_streak_100")
-    end
+  -- Login streaks
+  local streak = GetBestLoginStreak(playerName)
+  if streak >= 7 then 
+    self:CheckAndAwardBadge(playerName, "login_streak_7") 
+  end
+  if streak >= 30 then 
+    self:CheckAndAwardBadge(playerName, "login_streak_30") 
+  end
+  if streak >= 100 then
+    self:CheckAndAwardBadge(playerName, "login_streak_100")
   end
   
   -- === GROUP CONTENT ===
-  local groupHours = LeafVE_DB.guildieGroupHours[playerName] or 0
+  local groupHours = GetBestGuildieGroupHours(playerName)
   if groupHours >= 1 then 
     self:CheckAndAwardBadge(playerName, "guildie_hours_1") 
   end
@@ -1600,8 +1866,7 @@ function LeafVE:CheckBadgeMilestones(playerName)
   end
   
   -- === RAID ATTENDANCE ===
-  local attendance = LeafVE_DB.attendance[playerName] or {}
-  local attendCount = table.getn(attendance)
+  local attendCount = GetBestAttendanceCount(playerName)
   if attendCount >= 10 then 
     self:CheckAndAwardBadge(playerName, "attendance_10") 
   end
@@ -1613,9 +1878,8 @@ function LeafVE:CheckBadgeMilestones(playerName)
   end
   
   -- === GUILD LOYALTY (Time-based) ===
-  -- You'll need to track guild join date - add this to your DB when someone joins
-  if LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[playerName] then
-    local joinDate = LeafVE_DB.guildJoinDate[playerName]
+  local joinDate = GetBestGuildJoinDate(playerName)
+  if joinDate and joinDate > 0 then
     local daysInGuild = math.floor((Now() - joinDate) / SECONDS_PER_DAY)
     
     if daysInGuild >= 30 then 
@@ -1628,6 +1892,8 @@ function LeafVE:CheckBadgeMilestones(playerName)
       self:CheckAndAwardBadge(playerName, "guild_age_365") 
     end
   end
+
+  self:CacheBadgeProgress(playerName)
 end
 
 function LeafVE:GetBadgeProgress(playerName, badgeId)
@@ -1635,9 +1901,10 @@ function LeafVE:GetBadgeProgress(playerName, badgeId)
   local name = ShortName(playerName)
   if not name then return nil, nil end
 
-  local alltime = LeafVE_DB.alltime[name]
-    or (LeafVE_DB.lboard and LeafVE_DB.lboard.alltime and LeafVE_DB.lboard.alltime[name])
-    or {L=0, G=0, S=0}
+  local alltime = GetBestLifetimeEntry(name)
+  if LboardEntryTotal(alltime) > LboardEntryTotal(LeafVE_DB.alltime[name]) then
+    LeafVE_DB.alltime[name] = {L = alltime.L or 0, G = alltime.G or 0, S = alltime.S or 0}
+  end
   local totalPoints = (alltime.L or 0) + (alltime.G or 0) + (alltime.S or 0)
 
   if badgeId == "total_logins_100" then
@@ -1645,32 +1912,32 @@ function LeafVE:GetBadgeProgress(playerName, badgeId)
   elseif badgeId == "total_logins_365" then
     return alltime.L or 0, 365
   elseif badgeId == "login_streak_7" then
-    local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
+    local streak = GetBestLoginStreak(name)
     return streak, 7
   elseif badgeId == "login_streak_30" then
-    local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
+    local streak = GetBestLoginStreak(name)
     return streak, 30
   elseif badgeId == "login_streak_100" then
-    local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[name] and LeafVE_DB.loginStreaks[name].current) or 0
+    local streak = GetBestLoginStreak(name)
     return streak, 100
   elseif badgeId == "guildie_hours_1" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 1
+    return GetBestGuildieGroupHours(name), 1
   elseif badgeId == "guildie_hours_10" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 10
+    return GetBestGuildieGroupHours(name), 10
   elseif badgeId == "guildie_hours_25" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 25
+    return GetBestGuildieGroupHours(name), 25
   elseif badgeId == "guildie_hours_50" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 50
+    return GetBestGuildieGroupHours(name), 50
   elseif badgeId == "guildie_hours_100" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 100
+    return GetBestGuildieGroupHours(name), 100
   elseif badgeId == "guildie_hours_250" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 250
+    return GetBestGuildieGroupHours(name), 250
   elseif badgeId == "guildie_hours_500" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 500
+    return GetBestGuildieGroupHours(name), 500
   elseif badgeId == "guildie_hours_1000" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 1000
+    return GetBestGuildieGroupHours(name), 1000
   elseif badgeId == "guildie_hours_10000" then
-    return (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[name]) or 0, 10000
+    return GetBestGuildieGroupHours(name), 10000
   elseif badgeId == "shoutout_received_10" or badgeId == "shoutout_received_50" then
     local count = 0
     for _, targets in pairs(LeafVE_DB.shoutouts or {}) do
@@ -1692,14 +1959,15 @@ function LeafVE:GetBadgeProgress(playerName, badgeId)
   elseif badgeId == "total_20000" then
     return totalPoints, 100000
   elseif badgeId == "attendance_10" then
-    return table.getn(LeafVE_DB.attendance[name] or {}), 10
+    return GetBestAttendanceCount(name), 10
   elseif badgeId == "attendance_50" then
-    return table.getn(LeafVE_DB.attendance[name] or {}), 50
+    return GetBestAttendanceCount(name), 50
   elseif badgeId == "attendance_100" then
-    return table.getn(LeafVE_DB.attendance[name] or {}), 100
+    return GetBestAttendanceCount(name), 100
   elseif badgeId == "guild_age_30" or badgeId == "guild_age_90" or badgeId == "guild_age_365" then
-    if LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[name] then
-      local days = math.floor((Now() - LeafVE_DB.guildJoinDate[name]) / SECONDS_PER_DAY)
+    local joinDate = GetBestGuildJoinDate(name)
+    if joinDate and joinDate > 0 then
+      local days = math.floor((Now() - joinDate) / SECONDS_PER_DAY)
       if badgeId == "guild_age_30" then return days, 30 end
       if badgeId == "guild_age_90" then return days, 90 end
       return days, 365
@@ -1730,6 +1998,7 @@ function LeafVE:TrackAttendance()
   end
   if not found then
     table.insert(LeafVE_DB.attendance[me], {date = today, timestamp = Now()})
+    self:CacheBadgeProgress(me)
     self:AddToHistory(me, "A", 1, "Raid attendance")
     self:CheckBadgeMilestones(me)
   end
@@ -1759,6 +2028,7 @@ function LeafVE:AddPoints(playerName, pointType, amount)
   LeafVE_DB.alltime[playerName][pointType] = (LeafVE_DB.alltime[playerName][pointType] or 0) + amount
   if not LeafVE_DB.season[playerName] then LeafVE_DB.season[playerName] = {L = 0, G = 0, S = 0} end
   LeafVE_DB.season[playerName][pointType] = (LeafVE_DB.season[playerName][pointType] or 0) + amount
+  self:CacheBadgeProgress(playerName)
   local me = ShortName(UnitName("player"))
   -- Show notification if this is the current player
   local isMe = me and Lower(playerName) == Lower(me)
@@ -1796,6 +2066,7 @@ function LeafVE:CheckDailyLogin()
     streakData.current = 1
   end
   streakData.lastLogin = today
+  self:CacheBadgeProgress(me)
   local awarded = self:AddPoints(me, "L", loginPts)
   if awarded and awarded > 0 then
     self:AddToHistory(me, "L", awarded, "Daily login")
@@ -2205,6 +2476,7 @@ function LeafVE:ApplyGroupPointAward(playerName, pointsPerGuildie, numGuildies, 
   -- Each valid hourly tick always advances guildie-hour progress, even when LP is capped.
   LeafVE_DB.groupSessions[playerName] = (LeafVE_DB.groupSessions[playerName] or 0) + 1
   LeafVE_DB.guildieGroupHours[playerName] = (LeafVE_DB.guildieGroupHours[playerName] or 0) + 1
+  self:CacheBadgeProgress(playerName)
   self:CheckBadgeMilestones(playerName)
   if InGuild() then self:BroadcastBadgeProgress() end
 
@@ -2226,6 +2498,7 @@ function LeafVE:ApplyGroupPointAward(playerName, pointsPerGuildie, numGuildies, 
   local awarded = self:AddPoints(playerName, "G", points)
   if awarded and awarded > 0 then
     todayData.earned = (todayData.earned or 0) + awarded
+    self:CacheBadgeProgress(playerName)
     self:AddToHistory(playerName, "G", awarded, "Grouped with "..numGuildies.." guildies: "..guildieList)
     Print(string.format("Group points awarded! +%d LP (%d per guildie x%d guildies)", awarded, pointsPerGuildie, numGuildies))
     if LeafVE.UI and LeafVE.UI.Refresh then LeafVE.UI:Refresh() end
@@ -2688,17 +2961,26 @@ function LeafVE:BroadcastBadges()
 end
 
 -- Broadcast badge progress metrics so other guild members can display progress bars
--- Format: BADGEPROG:<name>:<groupSessions>:<attendance>:<loginStreak>:<guildJoinDate>
+-- Format: BADGEPROG:<name>:<groupSessions>:<attendance>:<loginStreak>:<guildJoinDate>:<guildieGroupHours>
 function LeafVE:BroadcastBadgeProgress()
   if not InGuild() then return end
   local me = ShortName(UnitName("player"))
   if not me then return end
   EnsureDB()
-  local groupSessions = LeafVE_DB.groupSessions[me] or 0
-  local attendance = table.getn(LeafVE_DB.attendance[me] or {})
-  local streak = (LeafVE_DB.loginStreaks and LeafVE_DB.loginStreaks[me] and LeafVE_DB.loginStreaks[me].current) or 0
-  local joinDate = (LeafVE_DB.guildJoinDate and LeafVE_DB.guildJoinDate[me]) or 0
-  local guildieGroupHoursMe = (LeafVE_DB.guildieGroupHours and LeafVE_DB.guildieGroupHours[me]) or 0
+  self:CacheBadgeProgress(me)
+
+  local groupSessions = (LeafVE_DB.groupSessions and LeafVE_DB.groupSessions[me]) or 0
+  local cachedGroupSessions = GetCachedProgressNumber(me, "groupSessions")
+  if cachedGroupSessions > groupSessions then
+    groupSessions = cachedGroupSessions
+    if not LeafVE_DB.groupSessions then LeafVE_DB.groupSessions = {} end
+    LeafVE_DB.groupSessions[me] = groupSessions
+  end
+
+  local attendance = GetBestAttendanceCount(me)
+  local streak = GetBestLoginStreak(me)
+  local joinDate = GetBestGuildJoinDate(me)
+  local guildieGroupHoursMe = GetBestGuildieGroupHours(me)
   SendAddonMessage("LeafVE", "BADGEPROG:"..me..SEP..groupSessions..SEP..attendance..SEP..streak..SEP..joinDate..SEP..guildieGroupHoursMe, "GUILD")
 end
 
@@ -3862,7 +4144,10 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       LeafVE_DB.loginStreaks[targetPlayer] = nil
       LeafVE_DB.loginTracking[targetPlayer] = nil
       LeafVE_DB.groupSessions[targetPlayer] = nil
+      LeafVE_DB.groupPointsToday[targetPlayer] = nil
+      LeafVE_DB.guildieGroupHours[targetPlayer] = nil
       LeafVE_DB.attendance[targetPlayer] = nil
+      if LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate[targetPlayer] = nil end
       LeafVE_DB.pointHistory[targetPlayer] = nil
       LeafVE_DB.instanceTracking[targetPlayer] = nil
       LeafVE_DB.questTracking[targetPlayer] = nil
@@ -3880,6 +4165,19 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       LeafVE_DB.shoutouts[targetPlayer] = nil
       if LeafVE_GlobalDB.achievementCache then
         LeafVE_GlobalDB.achievementCache[targetPlayer] = nil
+      end
+      if LeafVE_GlobalDB.lboardCache then
+        if LeafVE_GlobalDB.lboardCache.alltime then
+          LeafVE_GlobalDB.lboardCache.alltime[targetPlayer] = nil
+        end
+        if LeafVE_GlobalDB.lboardCache.weekly then
+          for _, wkData in pairs(LeafVE_GlobalDB.lboardCache.weekly) do
+            if type(wkData) == "table" then wkData[targetPlayer] = nil end
+          end
+        end
+      end
+      if LeafVE_GlobalDB.badgeProgressCache then
+        LeafVE_GlobalDB.badgeProgressCache[targetPlayer] = nil
       end
       if LeafVE.UI and LeafVE.UI.Refresh then
         LeafVE.UI:Refresh()
@@ -3899,15 +4197,20 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     LeafVE_DB.loginTracking = {}
     LeafVE_DB.groupSessions = {}
     LeafVE_DB.groupCooldowns = {}
+    LeafVE_DB.groupPointsToday = {}
+    LeafVE_DB.guildieGroupHours = {}
     LeafVE_DB.shoutouts    = {}
     LeafVE_DB.attendance   = {}
+    LeafVE_DB.guildJoinDate = {}
     LeafVE_DB.pointHistory = {}
     LeafVE_DB.weeklyRecap  = {}
     LeafVE_DB.instanceTracking = {}
     LeafVE_DB.questTracking = {}
     LeafVE_DB.questCompletions = {}
     LeafVE_DB.lboard       = { alltime = {}, weekly = {}, season = {}, updatedAt = {} }
+    LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} }
     LeafVE_GlobalDB.achievementCache = {}
+    LeafVE_GlobalDB.badgeProgressCache = {}
     LeafVE_GlobalDB.gearCache = {}
     LeafVE_GlobalDB.specCache = {}
     LeafVE_GlobalDB.talentCache = {}
@@ -3935,6 +4238,7 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       LeafVE_DB.groupSessions[declaredName]     = nil
       LeafVE_DB.groupPointsToday[declaredName]  = nil
       LeafVE_DB.guildieGroupHours[declaredName] = nil
+      if LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate[declaredName] = nil end
       LeafVE_DB.attendance[declaredName]        = nil
       LeafVE_DB.pointHistory[declaredName]      = nil
       LeafVE_DB.instanceTracking[declaredName]  = nil
@@ -3959,6 +4263,19 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       end
       if LeafVE_GlobalDB.achievementCache then
         LeafVE_GlobalDB.achievementCache[declaredName] = nil
+      end
+      if LeafVE_GlobalDB.lboardCache then
+        if LeafVE_GlobalDB.lboardCache.alltime then
+          LeafVE_GlobalDB.lboardCache.alltime[declaredName] = nil
+        end
+        if LeafVE_GlobalDB.lboardCache.weekly then
+          for _, wkData in pairs(LeafVE_GlobalDB.lboardCache.weekly) do
+            if type(wkData) == "table" then wkData[declaredName] = nil end
+          end
+        end
+      end
+      if LeafVE_GlobalDB.badgeProgressCache then
+        LeafVE_GlobalDB.badgeProgressCache[declaredName] = nil
       end
       if LeafVE_GlobalDB.gearCache then
         LeafVE_GlobalDB.gearCache[Lower(declaredName)] = nil
@@ -4132,7 +4449,8 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     if not p1 then return end
     local progName = string.sub(rest, 1, p1 - 1)
     local shortProgName = ShortName(progName)
-    if Lower(sender) ~= Lower(shortProgName or progName) then return end
+    local normalizedProgName = shortProgName or progName
+    if Lower(sender) ~= Lower(normalizedProgName) then return end
     local rest2 = string.sub(rest, p1 + 1)
     local p2 = string.find(rest2, SEP)
     if not p2 then return end
@@ -4157,29 +4475,32 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       receivedGroupHours = 0
     end
     EnsureDB()
-    if not LeafVE_DB.groupSessions[progName] or LeafVE_DB.groupSessions[progName] < groupSessions then
-      LeafVE_DB.groupSessions[progName] = groupSessions
+    if not LeafVE_DB.groupSessions[normalizedProgName] or LeafVE_DB.groupSessions[normalizedProgName] < groupSessions then
+      LeafVE_DB.groupSessions[normalizedProgName] = groupSessions
     end
     if not LeafVE_DB.guildieGroupHours then LeafVE_DB.guildieGroupHours = {} end
-    if not LeafVE_DB.guildieGroupHours[progName] or LeafVE_DB.guildieGroupHours[progName] < receivedGroupHours then
-      LeafVE_DB.guildieGroupHours[progName] = receivedGroupHours
+    if not LeafVE_DB.guildieGroupHours[normalizedProgName] or LeafVE_DB.guildieGroupHours[normalizedProgName] < receivedGroupHours then
+      LeafVE_DB.guildieGroupHours[normalizedProgName] = receivedGroupHours
     end
-    if not LeafVE_DB.attendance[progName] then LeafVE_DB.attendance[progName] = {} end
+    if not LeafVE_DB.attendance[normalizedProgName] then LeafVE_DB.attendance[normalizedProgName] = {} end
     -- Pad attendance array to at least the reported count so badge milestone
     -- checks (which use table.getn) reflect the sender's real attendance tally.
-    while table.getn(LeafVE_DB.attendance[progName]) < attendance do
-      table.insert(LeafVE_DB.attendance[progName], {})
+    while table.getn(LeafVE_DB.attendance[normalizedProgName]) < attendance do
+      table.insert(LeafVE_DB.attendance[normalizedProgName], {})
     end
-    if not LeafVE_DB.loginStreaks[progName] then LeafVE_DB.loginStreaks[progName] = {current = 0} end
-    if (LeafVE_DB.loginStreaks[progName].current or 0) < streak then
-      LeafVE_DB.loginStreaks[progName].current = streak
+    if not LeafVE_DB.loginStreaks[normalizedProgName] then LeafVE_DB.loginStreaks[normalizedProgName] = {current = 0} end
+    if (LeafVE_DB.loginStreaks[normalizedProgName].current or 0) < streak then
+      LeafVE_DB.loginStreaks[normalizedProgName].current = streak
     end
     if joinDate > 0 then
       if not LeafVE_DB.guildJoinDate then LeafVE_DB.guildJoinDate = {} end
-      if not LeafVE_DB.guildJoinDate[progName] then
-        LeafVE_DB.guildJoinDate[progName] = joinDate
+      local existingJoinDate = LeafVE_DB.guildJoinDate[normalizedProgName]
+      if not existingJoinDate or existingJoinDate <= 0 or joinDate < existingJoinDate then
+        LeafVE_DB.guildJoinDate[normalizedProgName] = joinDate
       end
     end
+    self:CheckBadgeMilestones(normalizedProgName)
+    self:CacheBadgeProgress(normalizedProgName)
     return
     
   -- Parse shoutout sync message
@@ -4884,6 +5205,8 @@ end
     end
     self:UpsertSharedLeaderboard(playerName, nil, {L = L, G = G, S = S}, wk)
   end
+  self:CheckBadgeMilestones(playerName)
+  self:CacheBadgeProgress(playerName)
 end
 
 function FindUnitToken(playerName)
@@ -11983,7 +12306,22 @@ function LeafVE.UI:Refresh()
       ))
     end
     
-    local seasonT = LeafVE_DB.season[me] or {L = 0, G = 0, S = 0}
+    -- Reconcile season/all-time with aggregated daily totals so display never lags
+    -- behind the authoritative per-day ledger.
+    local globalSum = AggregateGlobalTotalsForPlayer(me)
+
+    local seasonBase = LeafVE_DB.season[me] or {L = 0, G = 0, S = 0}
+    local seasonT = {
+      L = math.max(seasonBase.L or 0, globalSum.L or 0),
+      G = math.max(seasonBase.G or 0, globalSum.G or 0),
+      S = math.max(seasonBase.S or 0, globalSum.S or 0),
+    }
+    if not LeafVE_DB.season[me]
+      or (LeafVE_DB.season[me].L or 0) < seasonT.L
+      or (LeafVE_DB.season[me].G or 0) < seasonT.G
+      or (LeafVE_DB.season[me].S or 0) < seasonT.S then
+      LeafVE_DB.season[me] = {L = seasonT.L, G = seasonT.G, S = seasonT.S}
+    end
     if self.panels.me.seasonStats then
       self.panels.me.seasonStats:SetText(string.format(
         "Login: %d  |  Group: %d  |  Shoutouts: %d  |  |cFFFFD700Total: %d|r",
@@ -11991,8 +12329,21 @@ function LeafVE.UI:Refresh()
       ))
     end
     
-    -- All-time: use only local data (same as Season uses season[me] directly)
-    local alltimeT = LeafVE_DB.alltime[me] or {L = 0, G = 0, S = 0}
+    local leaderboardAlltime = ResolveLifetimeEntryForDisplay(me)
+    local bestAlltime = GetBestLifetimeEntry(me)
+    local alltimeT = {
+      L = math.max(leaderboardAlltime.L or 0, bestAlltime.L or 0, globalSum.L or 0),
+      G = math.max(leaderboardAlltime.G or 0, bestAlltime.G or 0, globalSum.G or 0),
+      S = math.max(leaderboardAlltime.S or 0, bestAlltime.S or 0, globalSum.S or 0),
+    }
+    if not LeafVE_DB.alltime[me]
+      or (LeafVE_DB.alltime[me].L or 0) < alltimeT.L
+      or (LeafVE_DB.alltime[me].G or 0) < alltimeT.G
+      or (LeafVE_DB.alltime[me].S or 0) < alltimeT.S then
+      LeafVE_DB.alltime[me] = {L = alltimeT.L, G = alltimeT.G, S = alltimeT.S}
+      StoreLifetimeSnapshot(me, alltimeT.L, alltimeT.G, alltimeT.S, me, true, true)
+    end
+    LeafVE:CacheBadgeProgress(me)
     if self.panels.me.alltimeStats then
       self.panels.me.alltimeStats:SetText(string.format(
         "Login: %d  |  Group: %d  |  Shoutouts: %d  |  |cFFFFD700Total: %d|r",
@@ -13312,9 +13663,3 @@ end
 Print("|cFF2DD35CLeaf Village Legends|r v"..LeafVE.version.." loaded!")
 Print("Type |cFFFFD700/lve|r or |cFFFFD700/leaf|r to open the UI")
 Print("Type |cFFFFD700/lvedebug|r for debug commands")
-
-
-
-
-
-
