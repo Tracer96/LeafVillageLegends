@@ -563,10 +563,6 @@ LeafVE.lastResyncRespondAt = 0
 LeafVE.lastShoutSyncRespondAt = 0
 LeafVE.lastBadgeSyncRespondAt = 0
 LeafVE.lastAchSyncRespondAt = 0
-LeafVE.lastTalentBroadcast = 0
-LeafVE.lastTalentCaptureAt = 0
-LeafVE.lastTalentRequestAt = LeafVE.lastTalentRequestAt or {}
-LeafVE.talentSyncBuffer = LeafVE.talentSyncBuffer or {}
 LeafVE.shoutSyncBuffer = {}
 LeafVE.instanceJoinedAt = nil
 LeafVE.instanceZone = nil
@@ -577,10 +573,6 @@ LeafVE.lastGroupAwardTick = nil
 LeafVE.lastCombatAt = 0
 LeafVE.lastActivityTime = 0
 local AFK_TIMEOUT = 600  -- 10 minutes of inactivity = considered AFK
-local TALENT_BROADCAST_THROTTLE = 900
-local TALENT_REQUEST_THROTTLE = 8
-local TALENT_SYNC_MAX_PAYLOAD = 170
-local TALENT_RECORD_SEP = "\30"
 -- Quest tracking via pfDB
 LeafVE.questLogCache       = {}   -- title -> {level, isComplete}  (updated on QUEST_LOG_UPDATE)
 LeafVE.lastQuestTurnInTime = 0    -- timestamp of last quest LP award (guard against double-awarding)
@@ -623,44 +615,6 @@ end
 local function Round2(num)
   if not num then return 0 end
   return math.floor((num * 100) + 0.5) / 100
-end
-
-local function EncodeTalentField(text)
-  text = tostring(text or "")
-  return string.gsub(text, "([^%w _%.%-])", function(ch)
-    return string.format("%%%02X", string.byte(ch))
-  end)
-end
-
-local function DecodeTalentField(text)
-  text = tostring(text or "")
-  return string.gsub(text, "%%(%x%x)", function(hex)
-    local num = tonumber(hex, 16)
-    if not num then return " " end
-    return string.char(num)
-  end)
-end
-
-local function SplitByLiteralSep(text, sep)
-  local out = {}
-  if text == nil then return out end
-  text = tostring(text)
-  if text == "" then
-    table.insert(out, "")
-    return out
-  end
-  local startPos = 1
-  while startPos <= string.len(text) do
-    local pos = string.find(text, sep, startPos, true)
-    if pos then
-      table.insert(out, string.sub(text, startPos, pos - 1))
-      startPos = pos + string.len(sep)
-    else
-      table.insert(out, string.sub(text, startPos))
-      break
-    end
-  end
-  return out
 end
 
 local function FormatAchievementName(achID)
@@ -879,7 +833,6 @@ local function EnsureDB()
   if not LeafVE_GlobalDB.achievementCache then LeafVE_GlobalDB.achievementCache = {} end
   if not LeafVE_GlobalDB.gearCache then LeafVE_GlobalDB.gearCache = {} end
   if not LeafVE_GlobalDB.specCache then LeafVE_GlobalDB.specCache = {} end
-  if not LeafVE_GlobalDB.talentCache then LeafVE_GlobalDB.talentCache = {} end
   if not LeafVE_GlobalDB.lboardCache then LeafVE_GlobalDB.lboardCache = { alltime = {}, weekly = {} } end
   if not LeafVE_GlobalDB.lboardCache.alltime then LeafVE_GlobalDB.lboardCache.alltime = {} end
   if not LeafVE_GlobalDB.lboardCache.weekly then LeafVE_GlobalDB.lboardCache.weekly = {} end
@@ -1297,12 +1250,6 @@ function LeafVE:ResetMyData()
   end
   if LeafVE_GlobalDB.specCache then
     LeafVE_GlobalDB.specCache[Lower(me)] = nil
-  end
-  if LeafVE_GlobalDB.talentCache then
-    LeafVE_GlobalDB.talentCache[Lower(me)] = nil
-  end
-  if LeafVE.talentSyncBuffer then
-    LeafVE.talentSyncBuffer[Lower(me)] = nil
   end
   if LeafVE_GlobalDB.playerNotes then
     LeafVE_GlobalDB.playerNotes[me] = nil
@@ -1980,137 +1927,6 @@ function LeafVE:GetSpecSnapshotForPlayer(playerName, classTag)
     name = specName,
     icon = specIcon,
   }
-end
-
-function LeafVE:GetLiveTalentSnapshot()
-  local me = ShortName(UnitName("player"))
-  if not me then return nil end
-  local treeSnapshot = self:GetTalentTreeSnapshotForPlayer(me, nil, false)
-
-  local bestName, bestIcon = nil, nil
-  local bestPoints = -1
-  local totalSpent = 0
-  local tabs = {}
-
-  if treeSnapshot and treeSnapshot.tabs then
-    local maxTab = 0
-    for idx in pairs(treeSnapshot.tabs) do
-      idx = tonumber(idx) or 0
-      if idx > maxTab then maxTab = idx end
-    end
-    for i = 1, maxTab do
-      local tab = treeSnapshot.tabs[i]
-      if tab then
-        local pointsSpent = tonumber(tab.points) or 0
-        totalSpent = totalSpent + pointsSpent
-        local row = {
-          name = tab.name or ("Tree " .. tostring(i)),
-          icon = tab.icon or "Interface\\Icons\\INV_Misc_QuestionMark",
-          points = pointsSpent,
-        }
-        table.insert(tabs, row)
-        if pointsSpent > bestPoints then
-          bestPoints = pointsSpent
-          bestName = row.name
-          bestIcon = row.icon
-        end
-      end
-    end
-  else
-    if not GetNumTalentTabs or not GetTalentTabInfo then return nil end
-    local tabCount = GetNumTalentTabs()
-    if not tabCount or tabCount < 1 then return nil end
-    for i = 1, tabCount do
-      local treeName, treeIcon, pointsSpent = GetTalentTabInfo(i)
-      pointsSpent = tonumber(pointsSpent) or 0
-      totalSpent = totalSpent + pointsSpent
-
-      local row = {
-        name = treeName or ("Tree " .. tostring(i)),
-        icon = NormalizeIconPath(treeIcon) or "Interface\\Icons\\INV_Misc_QuestionMark",
-        points = pointsSpent,
-      }
-      table.insert(tabs, row)
-
-      if pointsSpent > bestPoints then
-        bestPoints = pointsSpent
-        bestName = row.name
-        bestIcon = row.icon
-      end
-    end
-  end
-
-  return {
-    name = bestName,
-    icon = bestIcon,
-    points = bestPoints,
-    total = totalSpent,
-    tabs = tabs,
-  }
-end
-
-function LeafVE:GetTalentSpecForPlayer(playerName, classTag)
-  playerName = ShortName(playerName)
-  if not playerName then return nil end
-  classTag = string.upper(classTag or "")
-  if classTag == "" or classTag == "UNKNOWN" then
-    classTag = self:GetClassTagForPlayer(playerName)
-  end
-
-  local me = ShortName(UnitName("player"))
-  local isSelf = me and Lower(me) == Lower(playerName)
-
-  local treeSnapshot = self:GetTalentTreeSnapshotForPlayer(playerName, classTag, false)
-  if treeSnapshot and treeSnapshot.tabs then
-    local bestIdx = tonumber(treeSnapshot.activeTab) or 1
-    local bestName = nil
-    local bestIcon = nil
-    local bestPoints = -1
-    local totalSpent = 0
-    local tabs = {}
-    local maxTab = 0
-    for idx in pairs(treeSnapshot.tabs) do
-      idx = tonumber(idx) or 0
-      if idx > maxTab then maxTab = idx end
-    end
-    for idx = 1, maxTab do
-      local tab = treeSnapshot.tabs[idx]
-      if tab then
-        local points = tonumber(tab.points) or 0
-        totalSpent = totalSpent + points
-        table.insert(tabs, {
-          name = tab.name or ("Tree " .. tostring(idx)),
-          icon = tab.icon or "Interface\\Icons\\INV_Misc_QuestionMark",
-          points = points,
-        })
-        if points > bestPoints then
-          bestPoints = points
-          bestIdx = idx
-          bestName = tab.name
-          bestIcon = tab.icon
-        end
-      end
-    end
-    if bestName and totalSpent > 0 then
-      return {
-        class = classTag,
-        index = bestIdx,
-        name = bestName,
-        icon = bestIcon or CLASS_ICONS[classTag] or "Interface\\Icons\\INV_Misc_QuestionMark",
-        source = isSelf and "live" or "broadcast",
-        points = bestPoints,
-        total = totalSpent,
-        tabs = tabs,
-      }
-    end
-  end
-
-  local spec = self:GetSpecSnapshotForPlayer(playerName, classTag)
-  if spec then
-    spec.source = "cached"
-    return spec
-  end
-  return nil
 end
 
 function LeafVE:CycleMySpec()
@@ -2988,323 +2804,6 @@ end
 LeafVE.lastGearBroadcast = 0
 LeafVE.lastGearRequestAt = LeafVE.lastGearRequestAt or {}
 
-local leafTalentScanTip
-
-local function GetOrCreateTalentScanTip()
-  if not leafTalentScanTip then
-    leafTalentScanTip = CreateFrame("GameTooltip", "LeafVE_TalentScanTip", UIParent, "GameTooltipTemplate")
-    leafTalentScanTip:SetOwner(UIParent, "ANCHOR_NONE")
-  end
-  return leafTalentScanTip
-end
-
-local function TalentKeySort(a, b)
-  local aTab, aIdx = string.match(a or "", "^(%d+)_(%d+)$")
-  local bTab, bIdx = string.match(b or "", "^(%d+)_(%d+)$")
-  aTab, aIdx = tonumber(aTab) or 0, tonumber(aIdx) or 0
-  bTab, bIdx = tonumber(bTab) or 0, tonumber(bIdx) or 0
-  if aTab == bTab then return aIdx < bIdx end
-  return aTab < bTab
-end
-
-function LeafVE:CaptureAndCacheMyTalents(force)
-  EnsureDB()
-  local me = ShortName(UnitName("player"))
-  if not me then return nil end
-  local nameLower = Lower(me)
-
-  if not LeafVE_GlobalDB.talentCache then
-    LeafVE_GlobalDB.talentCache = {}
-  end
-  local now = Now()
-  local existing = LeafVE_GlobalDB.talentCache[nameLower]
-  if not force and existing and (now - (self.lastTalentCaptureAt or 0)) < 3 then
-    return existing
-  end
-
-  if not GetNumTalentTabs or not GetTalentTabInfo then
-    return existing
-  end
-
-  local tabCount = GetNumTalentTabs()
-  if not tabCount or tabCount < 1 then
-    return existing
-  end
-
-  local classTag = self:GetClassTagForPlayer(me)
-  local snapshot = {
-    updatedAt = now,
-    receivedAt = now,
-    class = classTag,
-    activeTab = 1,
-    tabs = {},
-    talents = {},
-  }
-
-  local maxPoints = -1
-  local talentTip = GetOrCreateTalentScanTip()
-
-  for tabIndex = 1, tabCount do
-    local tabName, tabIcon, pointsSpent = GetTalentTabInfo(tabIndex)
-    pointsSpent = tonumber(pointsSpent) or 0
-    local normalizedTabIcon = NormalizeIconPath(tabIcon) or CLASS_ICONS[classTag] or "Interface\\Icons\\INV_Misc_QuestionMark"
-    snapshot.tabs[tabIndex] = {
-      index = tabIndex,
-      name = tabName or ("Tree " .. tostring(tabIndex)),
-      icon = normalizedTabIcon,
-      points = pointsSpent,
-    }
-    if pointsSpent > maxPoints then
-      maxPoints = pointsSpent
-      snapshot.activeTab = tabIndex
-    end
-
-    local talentCount = (GetNumTalents and GetNumTalents(tabIndex)) or 0
-    for talentIndex = 1, talentCount do
-      local talentName, talentIcon, tier, column, rank, maxRank = GetTalentInfo(tabIndex, talentIndex)
-      if talentName and tier and column then
-        local descLines = {}
-        if talentTip and talentTip.SetTalent then
-          local ok = pcall(function()
-            talentTip:ClearLines()
-            talentTip:SetTalent(tabIndex, talentIndex)
-          end)
-          if ok and talentTip.NumLines then
-            local lines = talentTip:NumLines() or 0
-            for lineIndex = 2, lines do
-              local leftFS = getglobal("LeafVE_TalentScanTipTextLeft" .. tostring(lineIndex))
-              local textLine = leftFS and leftFS:GetText()
-              if textLine and textLine ~= "" then
-                if not (lineIndex == 2 and string.find(string.lower(textLine), "rank", 1, true)) then
-                  table.insert(descLines, textLine)
-                end
-              end
-            end
-          end
-        end
-
-        local key = tostring(tabIndex) .. "_" .. tostring(talentIndex)
-        snapshot.talents[key] = {
-          tab = tabIndex,
-          index = talentIndex,
-          tier = tonumber(tier) or 1,
-          column = tonumber(column) or 1,
-          rank = tonumber(rank) or 0,
-          maxRank = tonumber(maxRank) or 0,
-          name = talentName,
-          icon = NormalizeIconPath(talentIcon) or "Interface\\Icons\\INV_Misc_QuestionMark",
-          desc = table.concat(descLines, "\n"),
-        }
-      end
-    end
-  end
-
-  LeafVE_GlobalDB.talentCache[nameLower] = snapshot
-  self.lastTalentCaptureAt = now
-  return snapshot
-end
-
-function LeafVE:GetTalentTreeSnapshotForPlayer(playerName, classTag, forceRefresh)
-  EnsureDB()
-  playerName = ShortName(playerName)
-  if not playerName then return nil end
-  local nameLower = Lower(playerName)
-  local me = ShortName(UnitName("player"))
-
-  if me and Lower(me) == nameLower then
-    local existing = LeafVE_GlobalDB.talentCache and LeafVE_GlobalDB.talentCache[nameLower]
-    if forceRefresh or not existing or (Now() - (existing.updatedAt or 0)) > 30 then
-      self:CaptureAndCacheMyTalents(forceRefresh)
-    end
-  end
-
-  local snapshot = LeafVE_GlobalDB.talentCache and LeafVE_GlobalDB.talentCache[nameLower]
-  if not snapshot then return nil end
-  if classTag and classTag ~= "" and classTag ~= "UNKNOWN" and (not snapshot.class or snapshot.class == "UNKNOWN") then
-    snapshot.class = string.upper(classTag)
-  end
-  return snapshot
-end
-
-function LeafVE:SerializeTalentSnapshot(snapshot)
-  if not snapshot then return "" end
-
-  local records = {}
-  table.insert(records,
-    "H" .. SEP ..
-    EncodeTalentField(snapshot.class or "UNKNOWN") .. SEP ..
-    tostring(tonumber(snapshot.activeTab) or 1)
-  )
-
-  local maxTab = 0
-  for tabIndex in pairs(snapshot.tabs or {}) do
-    tabIndex = tonumber(tabIndex) or 0
-    if tabIndex > maxTab then
-      maxTab = tabIndex
-    end
-  end
-
-  for tabIndex = 1, maxTab do
-    local tab = snapshot.tabs and snapshot.tabs[tabIndex]
-    if tab then
-      table.insert(records,
-        "B" .. SEP ..
-        tostring(tabIndex) .. SEP ..
-        EncodeTalentField(tab.name or ("Tree " .. tostring(tabIndex))) .. SEP ..
-        EncodeTalentField(tab.icon or "Interface\\Icons\\INV_Misc_QuestionMark") .. SEP ..
-        tostring(tonumber(tab.points) or 0)
-      )
-    end
-  end
-
-  local keys = {}
-  for key, talent in pairs(snapshot.talents or {}) do
-    if type(talent) == "table" then
-      table.insert(keys, key)
-    end
-  end
-  table.sort(keys, TalentKeySort)
-
-  for i = 1, table.getn(keys) do
-    local talent = snapshot.talents[keys[i]]
-    table.insert(records,
-      "T" .. SEP ..
-      tostring(tonumber(talent.tab) or 1) .. SEP ..
-      tostring(tonumber(talent.index) or 1) .. SEP ..
-      tostring(tonumber(talent.tier) or 1) .. SEP ..
-      tostring(tonumber(talent.column) or 1) .. SEP ..
-      tostring(tonumber(talent.rank) or 0) .. SEP ..
-      tostring(tonumber(talent.maxRank) or 0) .. SEP ..
-      EncodeTalentField(talent.name or "") .. SEP ..
-      EncodeTalentField(talent.icon or "Interface\\Icons\\INV_Misc_QuestionMark") .. SEP ..
-      EncodeTalentField(talent.desc or "")
-    )
-  end
-
-  return table.concat(records, TALENT_RECORD_SEP)
-end
-
-function LeafVE:ApplyTalentPayload(playerName, updatedAt, payload)
-  EnsureDB()
-  playerName = ShortName(playerName)
-  if not playerName then return end
-  local nameLower = Lower(playerName)
-
-  local snapshot = {
-    updatedAt = tonumber(updatedAt) or Now(),
-    receivedAt = Now(),
-    class = "UNKNOWN",
-    activeTab = 1,
-    tabs = {},
-    talents = {},
-  }
-
-  local records = SplitByLiteralSep(payload or "", TALENT_RECORD_SEP)
-  for i = 1, table.getn(records) do
-    local record = records[i]
-    if record and record ~= "" then
-      local fields = SplitByLiteralSep(record, SEP)
-      local recType = fields[1]
-      if recType == "H" then
-        snapshot.class = string.upper(DecodeTalentField(fields[2] or "UNKNOWN"))
-        snapshot.activeTab = tonumber(fields[3]) or 1
-      elseif recType == "B" then
-        local tabIndex = tonumber(fields[2]) or 0
-        if tabIndex > 0 then
-          snapshot.tabs[tabIndex] = {
-            index = tabIndex,
-            name = DecodeTalentField(fields[3] or ("Tree " .. tostring(tabIndex))),
-            icon = NormalizeIconPath(DecodeTalentField(fields[4] or "Interface\\Icons\\INV_Misc_QuestionMark")) or "Interface\\Icons\\INV_Misc_QuestionMark",
-            points = tonumber(fields[5]) or 0,
-          }
-        end
-      elseif recType == "T" then
-        local tabIndex = tonumber(fields[2]) or 0
-        local talentIndex = tonumber(fields[3]) or 0
-        if tabIndex > 0 and talentIndex > 0 then
-          local key = tostring(tabIndex) .. "_" .. tostring(talentIndex)
-          snapshot.talents[key] = {
-            tab = tabIndex,
-            index = talentIndex,
-            tier = tonumber(fields[4]) or 1,
-            column = tonumber(fields[5]) or 1,
-            rank = tonumber(fields[6]) or 0,
-            maxRank = tonumber(fields[7]) or 0,
-            name = DecodeTalentField(fields[8] or ""),
-            icon = NormalizeIconPath(DecodeTalentField(fields[9] or "Interface\\Icons\\INV_Misc_QuestionMark")) or "Interface\\Icons\\INV_Misc_QuestionMark",
-            desc = DecodeTalentField(fields[10] or ""),
-          }
-        end
-      end
-    end
-  end
-
-  if snapshot.class == "" or snapshot.class == "UNKNOWN" then
-    snapshot.class = self:GetClassTagForPlayer(playerName)
-  end
-  if not LeafVE_GlobalDB.talentCache then
-    LeafVE_GlobalDB.talentCache = {}
-  end
-  LeafVE_GlobalDB.talentCache[nameLower] = snapshot
-end
-
-function LeafVE:RequestTalentData(playerName, force)
-  if not InGuild() then return end
-  playerName = ShortName(playerName)
-  if not playerName then return end
-
-  local me = ShortName(UnitName("player"))
-  if me and Lower(me) == Lower(playerName) then
-    return
-  end
-
-  local lname = Lower(playerName)
-  local now = Now()
-  self.lastTalentRequestAt = self.lastTalentRequestAt or {}
-  if not force and self.lastTalentRequestAt[lname] and (now - self.lastTalentRequestAt[lname]) < TALENT_REQUEST_THROTTLE then
-    return
-  end
-  self.lastTalentRequestAt[lname] = now
-  SendAddonMessage("LeafVE", "TALREQ:" .. playerName, "GUILD")
-end
-
-function LeafVE:BroadcastMyTalents(force)
-  if not InGuild() then return end
-  local now = Now()
-  if not force and (now - (self.lastTalentBroadcast or 0)) < TALENT_BROADCAST_THROTTLE then
-    return
-  end
-
-  local snapshot = self:CaptureAndCacheMyTalents(force)
-  if not snapshot then return end
-
-  local me = ShortName(UnitName("player"))
-  if not me then return end
-
-  local payload = self:SerializeTalentSnapshot(snapshot)
-  if not payload or payload == "" then return end
-
-  self.lastTalentBroadcast = now
-
-  local chunks = {}
-  local startPos = 1
-  while startPos <= string.len(payload) do
-    table.insert(chunks, string.sub(payload, startPos, startPos + TALENT_SYNC_MAX_PAYLOAD - 1))
-    startPos = startPos + TALENT_SYNC_MAX_PAYLOAD
-  end
-  if table.getn(chunks) == 0 then
-    table.insert(chunks, "")
-  end
-
-  local totalChunks = table.getn(chunks)
-  for i = 1, totalChunks do
-    SendAddonMessage("LeafVE",
-      "GTALSYNC:" .. me .. ":" .. tostring(snapshot.updatedAt or now) .. ":" .. tostring(i) .. "/" .. tostring(totalChunks) .. ":" .. chunks[i],
-      "GUILD"
-    )
-  end
-end
-
 function LeafVE:ParseItemIDFromLink(link)
   if not link then return nil end
   local s = string.find(link, "|Hitem:")
@@ -3910,8 +3409,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     LeafVE_GlobalDB.achievementCache = {}
     LeafVE_GlobalDB.gearCache = {}
     LeafVE_GlobalDB.specCache = {}
-    LeafVE_GlobalDB.talentCache = {}
-    LeafVE.talentSyncBuffer = {}
     if LeafVE_AchTest_DB and LeafVE_AchTest_DB.achievements then
       LeafVE_AchTest_DB.achievements = {}
     end
@@ -3966,12 +3463,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
       if LeafVE_GlobalDB.specCache then
         LeafVE_GlobalDB.specCache[Lower(declaredName)] = nil
       end
-      if LeafVE_GlobalDB.talentCache then
-        LeafVE_GlobalDB.talentCache[Lower(declaredName)] = nil
-      end
-      if LeafVE.talentSyncBuffer then
-        LeafVE.talentSyncBuffer[Lower(declaredName)] = nil
-      end
       if LeafVE_GlobalDB.playerNotes then
         LeafVE_GlobalDB.playerNotes[declaredName] = nil
       end
@@ -3988,81 +3479,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     local me = ShortName(UnitName("player"))
     if requestedName and me and Lower(requestedName) == Lower(me) then
       self:BroadcastMyGear(true)
-    end
-    return
-  end
-
-  -- Handle explicit remote-talent requests; only the requested player responds.
-  if string.sub(message, 1, 7) == "TALREQ:" then
-    local requestedName = ShortName(string.sub(message, 8))
-    local me = ShortName(UnitName("player"))
-    if requestedName and me and Lower(requestedName) == Lower(me) then
-      self:BroadcastMyTalents(true)
-    end
-    return
-  end
-
-  -- Handle chunked talent tree sync payload.
-  if string.sub(message, 1, 9) == "GTALSYNC:" then
-    local rest = string.sub(message, 10)
-    local p1 = string.find(rest, ":")
-    if not p1 then return end
-    local declaredName = string.sub(rest, 1, p1 - 1)
-    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) then return end
-    local rest2 = string.sub(rest, p1 + 1)
-    local p2 = string.find(rest2, ":")
-    if not p2 then return end
-    local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
-    local rest3 = string.sub(rest2, p2 + 1)
-    local p3 = string.find(rest3, ":")
-    if not p3 then return end
-    local chunkInfo = string.sub(rest3, 1, p3 - 1)
-    local payload = string.sub(rest3, p3 + 1)
-    local slashPos = string.find(chunkInfo, "/")
-    if not slashPos then return end
-    local chunkNum = tonumber(string.sub(chunkInfo, 1, slashPos - 1))
-    local totalChunks = tonumber(string.sub(chunkInfo, slashPos + 1))
-    if not chunkNum or not totalChunks or chunkNum < 1 or totalChunks < 1 then return end
-
-    self.talentSyncBuffer = self.talentSyncBuffer or {}
-    local nameLower = Lower(sender)
-    local buffered = self.talentSyncBuffer[nameLower]
-    if not buffered or buffered.updatedAt ~= updatedAt or buffered.total ~= totalChunks then
-      buffered = {updatedAt = updatedAt, total = totalChunks, chunks = {}}
-      self.talentSyncBuffer[nameLower] = buffered
-    end
-    buffered.chunks[chunkNum] = payload
-
-    local received = 0
-    for i = 1, totalChunks do
-      if buffered.chunks[i] then
-        received = received + 1
-      end
-    end
-    if received == totalChunks then
-      local parts = {}
-      for i = 1, totalChunks do
-        table.insert(parts, buffered.chunks[i] or "")
-      end
-      self.talentSyncBuffer[nameLower] = nil
-      EnsureDB()
-      local existingTalent = LeafVE_GlobalDB.talentCache and LeafVE_GlobalDB.talentCache[nameLower]
-      if existingTalent and updatedAt < (existingTalent.updatedAt or 0) then
-        return
-      end
-      self:ApplyTalentPayload(sender, updatedAt, table.concat(parts, ""))
-
-      if LeafVE.UI and LeafVE.UI.cardCurrentPlayer and Lower(LeafVE.UI.cardCurrentPlayer) == nameLower then
-        local classTag = LeafVE:GetClassTagForPlayer(LeafVE.UI.cardCurrentPlayer)
-        local spec = LeafVE:GetTalentSpecForPlayer(LeafVE.UI.cardCurrentPlayer, classTag)
-        if LeafVE.UI.cardTalentBtn then
-          local specName = spec and spec.name or classTag
-          LeafVE.UI.cardTalentBtn:SetText("Talent Spec: " .. tostring(specName))
-        end
-        if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-          LeafVE.UI:RefreshTalentPopup(LeafVE.UI.cardCurrentPlayer, true)
-        end
-      end
     end
     return
   end
@@ -5337,10 +4753,6 @@ viewAllBadgesBtn:SetScript("OnClick", function()
   if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
     LeafVE.UI.gearPopup:Hide()
   end
-  if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-    LeafVE.UI.talentPopup:Hide()
-  end
-  LeafVE.UI:HideNativeTalentFrame()
   if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
     LeafVE.UI.allBadgesFrame:Hide()
   else
@@ -5368,10 +4780,6 @@ gearBtn:SetScript("OnClick", function()
   if LeafVE.UI.achPopup and LeafVE.UI.achPopup:IsVisible() then
     LeafVE.UI.achPopup:Hide()
   end
-  if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-    LeafVE.UI.talentPopup:Hide()
-  end
-  LeafVE.UI:HideNativeTalentFrame()
   if not LeafVE.UI.gearPopup then
     LeafVE.UI:CreateGearPopup()
   end
@@ -5425,10 +4833,6 @@ viewAllBtn:SetScript("OnClick", function()
   if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
     LeafVE.UI.gearPopup:Hide()
   end
-  if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-    LeafVE.UI.talentPopup:Hide()
-  end
-  LeafVE.UI:HideNativeTalentFrame()
   -- Create popup if it doesn't exist
   if not LeafVE.UI.achPopup then
     LeafVE.UI:CreateAchievementListPopup()
@@ -5442,45 +4846,6 @@ viewAllBtn:SetScript("OnClick", function()
   end
 end)
   self.cardViewAllBtn = viewAllBtn
-
-  local talentBtn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
-  talentBtn:SetPoint("TOP", viewAllBtn, "BOTTOM", 0, -5)
-  talentBtn:SetWidth(180)
-  talentBtn:SetHeight(22)
-  talentBtn:SetText("Talent Spec: -")
-  SkinButtonAccent(talentBtn)
-  talentBtn:SetScript("OnClick", function()
-    if not LeafVE.UI.cardCurrentPlayer then return end
-
-    if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
-      LeafVE.UI.allBadgesFrame:Hide()
-    end
-    if LeafVE.UI.achPopup and LeafVE.UI.achPopup:IsVisible() then
-      LeafVE.UI.achPopup:Hide()
-    end
-    if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
-      LeafVE.UI.gearPopup:Hide()
-    end
-    LeafVE.UI:HideNativeTalentFrame()
-
-    if not LeafVE.UI.talentPopup then
-      LeafVE.UI:CreateTalentPopup()
-    end
-    if LeafVE.UI.talentPopup:IsVisible() then
-      LeafVE.UI.talentPopup:Hide()
-    else
-      local selected = ShortName(LeafVE.UI.cardCurrentPlayer)
-      local me = ShortName(UnitName("player"))
-      if selected and me and Lower(selected) ~= Lower(me) then
-        LeafVE:RequestTalentData(selected, true)
-      else
-        LeafVE:CaptureAndCacheMyTalents(false)
-      end
-      LeafVE.UI:RefreshTalentPopup(LeafVE.UI.cardCurrentPlayer)
-      LeafVE.UI.talentPopup:Show()
-    end
-  end)
-  self.cardTalentBtn = talentBtn
 
    -- Player Note (matching Wisdom of the Leaf style)
   local notesLabel = c:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -6073,14 +5438,9 @@ function LeafVE.UI:ShowPlayerCard(playerName)
   local me = ShortName(UnitName("player"))
   local isSelf = me and Lower(me) == Lower(playerName)
   if not isSelf then
-    self:HideNativeTalentFrame()
-    LeafVE:RequestTalentData(playerName)
-  end
-  if not isSelf then
     LeafVE:RequestGearData(playerName)
   else
     LeafVE:CaptureAndCacheMyGear()
-    LeafVE:CaptureAndCacheMyTalents(false)
   end
 
   local classColor = CLASS_COLORS[class] or {1, 1, 1}
@@ -6093,7 +5453,6 @@ function LeafVE.UI:ShowPlayerCard(playerName)
     LeafVE:CaptureAndCacheInspectedGear(playerName, unitToken)
   end
   local specSnapshot = LeafVE:GetSpecSnapshotForPlayer(playerName, class)
-  local talentSnapshot = LeafVE:GetTalentSpecForPlayer(playerName, class)
   
   if useModel then
     local modelOk = pcall(function()
@@ -6148,17 +5507,6 @@ function LeafVE.UI:ShowPlayerCard(playerName)
       self.cardSpecCycleBtn:Hide()
       self.cardSpecCycleBtn:Disable()
     end
-  end
-
-  if self.cardTalentBtn then
-    local talentName = (talentSnapshot and talentSnapshot.name) or (specSnapshot and specSnapshot.name) or class
-    self.cardTalentBtn:SetText("Talent Spec: " .. tostring(talentName))
-    self.cardTalentBtn:Show()
-    self.cardTalentBtn:Enable()
-  end
-
-  if self.talentPopup and self.talentPopup:IsVisible() then
-    self:RefreshTalentPopup(playerName, true)
   end
 
   -- UPDATE RECENT BADGES (LEFT SIDE) - REPLACES Today/Week/Season stats
@@ -7507,379 +6855,6 @@ function LeafVE.UI:RefreshGearPopup(playerName, skipDeferredLayout)
   end
 end
 
-function LeafVE.UI:GetNativeTalentFrame()
-  return PlayerTalentFrame or TalentFrame
-end
-
-function LeafVE.UI:IsNativeTalentFrameVisible()
-  local talentFrame = self:GetNativeTalentFrame()
-  return talentFrame and talentFrame:IsVisible() or false
-end
-
-function LeafVE.UI:HideNativeTalentFrame()
-  local talentFrame = self:GetNativeTalentFrame()
-  if not talentFrame or not talentFrame:IsVisible() then return end
-  if HideUIPanel then
-    HideUIPanel(talentFrame)
-  else
-    talentFrame:Hide()
-  end
-end
-
-function LeafVE.UI:ShowNativeTalentFrame()
-  if ToggleTalentFrame then
-    ToggleTalentFrame()
-  end
-
-  local talentFrame = self:GetNativeTalentFrame()
-  if not talentFrame then return false end
-
-  if not talentFrame:IsVisible() then
-    if ShowUIPanel then
-      ShowUIPanel(talentFrame)
-    else
-      talentFrame:Show()
-    end
-  end
-  if not talentFrame:IsVisible() then
-    return false
-  end
-
-  if self.frame then
-    talentFrame:ClearAllPoints()
-    talentFrame:SetPoint("TOPLEFT", self.frame, "TOPRIGHT", 5, 0)
-  end
-  if talentFrame.SetFrameStrata then
-    talentFrame:SetFrameStrata("DIALOG")
-  end
-  return true
-end
-
-function LeafVE.UI:CreateTalentPopup()
-  if self.talentPopup then return end
-
-  local popup = CreateFrame("Frame", "LeafVE_TalentPopup", UIParent)
-  popup:SetWidth(420)
-  popup:SetFrameStrata("DIALOG")
-  popup:EnableMouse(true)
-
-  if LeafVE.UI.frame then
-    popup:SetPoint("TOPLEFT", LeafVE.UI.frame, "TOPRIGHT", 5, 0)
-    popup:SetHeight(LeafVE.UI.frame:GetHeight())
-  else
-    popup:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    popup:SetHeight(520)
-  end
-
-  popup:SetBackdrop({
-    bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
-    edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
-    tile = true, tileSize = 32, edgeSize = 32,
-    insets = { left = 11, right = 12, top = 12, bottom = 11 }
-  })
-  popup:SetBackdropColor(0, 0, 0, 0.95)
-  popup:Hide()
-
-  local titleText = popup:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-  titleText:SetPoint("TOP", popup, "TOP", 0, -15)
-  titleText:SetTextColor(THEME.gold[1], THEME.gold[2], THEME.gold[3])
-  popup.titleText = titleText
-
-  local sourceText = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  sourceText:SetPoint("TOP", titleText, "BOTTOM", 0, -4)
-  sourceText:SetWidth(360)
-  sourceText:SetJustifyH("CENTER")
-  popup.sourceText = sourceText
-
-  local pointsText = popup:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  pointsText:SetPoint("TOP", sourceText, "BOTTOM", 0, -8)
-  pointsText:SetTextColor(1, 0.82, 0.2)
-  popup.pointsText = pointsText
-
-  local closeBtn = CreateFrame("Button", nil, popup, "UIPanelCloseButton")
-  closeBtn:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -5, -5)
-  closeBtn:SetScript("OnClick", function() popup:Hide() end)
-
-  local treeFrame = CreateFrame("Frame", nil, popup)
-  treeFrame:SetPoint("TOPLEFT", popup, "TOPLEFT", 18, -90)
-  treeFrame:SetPoint("BOTTOMRIGHT", popup, "BOTTOMRIGHT", -20, 56)
-  treeFrame:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    tile = true, tileSize = 16, edgeSize = 12,
-    insets = {left = 3, right = 3, top = 3, bottom = 3}
-  })
-  treeFrame:SetBackdropColor(0.06, 0.06, 0.08, 0.78)
-  treeFrame:SetBackdropBorderColor(0.5, 0.4, 0.2, 0.8)
-  popup.treeFrame = treeFrame
-
-  local emptyText = treeFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-  emptyText:SetPoint("CENTER", treeFrame, "CENTER", 0, 0)
-  emptyText:SetText("|cFF888888No talent data|r")
-  popup.emptyText = emptyText
-
-  popup.tabButtons = {}
-  for i = 1, 3 do
-    local btn = CreateFrame("Button", nil, popup, "UIPanelButtonTemplate")
-    btn:SetWidth(122)
-    btn:SetHeight(22)
-    if i == 1 then
-      btn:SetPoint("BOTTOMLEFT", popup, "BOTTOMLEFT", 18, 20)
-    else
-      btn:SetPoint("LEFT", popup.tabButtons[i - 1], "RIGHT", 9, 0)
-    end
-    SkinButtonAccent(btn)
-    btn:SetScript("OnClick", function()
-      if not this.tabIndex then return end
-      popup.selectedTab = this.tabIndex
-      if LeafVE and LeafVE.UI and LeafVE.UI.cardCurrentPlayer then
-        LeafVE.UI:RefreshTalentPopup(LeafVE.UI.cardCurrentPlayer, true)
-      end
-    end)
-    popup.tabButtons[i] = btn
-  end
-
-  popup.talentButtons = {}
-
-  self.talentPopup = popup
-end
-
-function LeafVE.UI:RefreshTalentPopup(playerName, keepSelectedTab)
-  if not self.talentPopup then return end
-  playerName = ShortName(playerName)
-  if not playerName then return end
-
-  if not keepSelectedTab or self.talentPopup.currentPlayer ~= playerName then
-    self.talentPopup.selectedTab = nil
-  end
-  self.talentPopup.currentPlayer = playerName
-
-  local me = ShortName(UnitName("player"))
-  local isSelf = me and Lower(me) == Lower(playerName)
-  local classTag = LeafVE:GetClassTagForPlayer(playerName)
-
-  if isSelf then
-    LeafVE:CaptureAndCacheMyTalents(false)
-  else
-    LeafVE:RequestTalentData(playerName)
-  end
-
-  self.talentPopup.titleText:SetText(playerName .. "'s Talents")
-
-  local treeSnapshot = LeafVE:GetTalentTreeSnapshotForPlayer(playerName, classTag, false)
-  local sourceText
-  if isSelf then
-    sourceText = "|cFF88FF88Source: Live talents|r"
-  elseif treeSnapshot and treeSnapshot.receivedAt then
-    local age = Now() - (treeSnapshot.receivedAt or treeSnapshot.updatedAt or Now())
-    if age < 0 then age = 0 end
-    local ageLabel
-    if age < 60 then
-      ageLabel = tostring(age) .. "s ago"
-    elseif age < 3600 then
-      ageLabel = tostring(math.floor(age / 60)) .. "m ago"
-    else
-      ageLabel = tostring(math.floor(age / 3600)) .. "h ago"
-    end
-    sourceText = "Source: |cFF88CCFFGuild broadcast|r  |cFF888888" .. ageLabel .. "|r"
-  else
-    sourceText = "|cFF888888Source: Waiting for broadcast...|r"
-  end
-  self.talentPopup.sourceText:SetText(sourceText)
-
-  local tabs = {}
-  local maxTab = 0
-  if treeSnapshot and treeSnapshot.tabs then
-    for idx in pairs(treeSnapshot.tabs) do
-      idx = tonumber(idx) or 0
-      if idx > maxTab then maxTab = idx end
-    end
-    for idx = 1, maxTab do
-      if treeSnapshot.tabs[idx] then
-        tabs[idx] = treeSnapshot.tabs[idx]
-      end
-    end
-  end
-
-  if maxTab < 1 then
-    local names = CLASS_SPEC_NAMES[classTag]
-    if names and table.getn(names) > 0 then
-      maxTab = table.getn(names)
-      for idx = 1, maxTab do
-        tabs[idx] = {
-          index = idx,
-          name = names[idx],
-          points = 0,
-          icon = (CLASS_SPEC_ICONS[classTag] and CLASS_SPEC_ICONS[classTag][idx]) or CLASS_ICONS[classTag] or "Interface\\Icons\\INV_Misc_QuestionMark",
-        }
-      end
-    end
-  end
-
-  local selectedTab = self.talentPopup.selectedTab
-  if not selectedTab then
-    selectedTab = treeSnapshot and tonumber(treeSnapshot.activeTab) or 1
-  end
-  if not tabs[selectedTab] then
-    selectedTab = nil
-    for idx = 1, maxTab do
-      if tabs[idx] then
-        selectedTab = idx
-        break
-      end
-    end
-  end
-  if not selectedTab then selectedTab = 1 end
-  self.talentPopup.selectedTab = selectedTab
-
-  for i = 1, table.getn(self.talentPopup.tabButtons) do
-    local btn = self.talentPopup.tabButtons[i]
-    local tabData = tabs[i]
-    if tabData then
-      btn.tabIndex = i
-      if i == selectedTab then
-        btn:SetText("|cFFFFFF99" .. tostring(tabData.name or ("Tree " .. tostring(i))) .. "|r")
-      else
-        btn:SetText(tostring(tabData.name or ("Tree " .. tostring(i))))
-      end
-      btn:Show()
-      btn:Enable()
-    else
-      btn:Hide()
-    end
-  end
-
-  local selectedTabData = tabs[selectedTab]
-  if selectedTabData then
-    self.talentPopup.pointsText:SetText("Points spent in " .. tostring(selectedTabData.name or ("Tree " .. tostring(selectedTab))) .. ": " .. tostring(tonumber(selectedTabData.points) or 0))
-  else
-    self.talentPopup.pointsText:SetText("|cFF888888No tree selected|r")
-  end
-
-  local talents = {}
-  if treeSnapshot and treeSnapshot.talents then
-    for _, talent in pairs(treeSnapshot.talents) do
-      if type(talent) == "table" and (tonumber(talent.tab) or 0) == selectedTab then
-        table.insert(talents, talent)
-      end
-    end
-  end
-
-  table.sort(talents, function(a, b)
-    local at = tonumber(a.tier) or 0
-    local bt = tonumber(b.tier) or 0
-    if at == bt then
-      local ac = tonumber(a.column) or 0
-      local bc = tonumber(b.column) or 0
-      if ac == bc then
-        return (tonumber(a.index) or 0) < (tonumber(b.index) or 0)
-      end
-      return ac < bc
-    end
-    return at < bt
-  end)
-
-  local function AcquireTalentButton(i)
-    local btn = self.talentPopup.talentButtons[i]
-    if btn then return btn end
-    btn = CreateFrame("Button", nil, self.talentPopup.treeFrame)
-    btn:SetWidth(40)
-    btn:SetHeight(40)
-    btn:SetBackdrop({
-      bgFile = "Interface\\Buttons\\WHITE8X8",
-      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-      tile = false, tileSize = 8, edgeSize = 10,
-      insets = {left = 2, right = 2, top = 2, bottom = 2}
-    })
-    btn:SetBackdropColor(0.1, 0.1, 0.1, 0.85)
-    btn:SetBackdropBorderColor(0.5, 0.5, 0.5, 0.8)
-
-    local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetPoint("TOPLEFT", btn, "TOPLEFT", 3, -3)
-    icon:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -3, 3)
-    btn.icon = icon
-
-    local dim = btn:CreateTexture(nil, "OVERLAY")
-    dim:SetAllPoints(icon)
-    dim:SetTexture(0, 0, 0, 0.5)
-    dim:Hide()
-    btn.dim = dim
-
-    local rankText = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    rankText:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 2)
-    rankText:SetJustifyH("RIGHT")
-    rankText:SetText("")
-    btn.rankText = rankText
-
-    btn:SetScript("OnEnter", function()
-      if not this.talentData then return end
-      local data = this.talentData
-      GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-      GameTooltip:ClearLines()
-      GameTooltip:SetText(data.name or "Talent", THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, true)
-      GameTooltip:AddLine("Rank " .. tostring(tonumber(data.rank) or 0) .. "/" .. tostring(tonumber(data.maxRank) or 0), 1, 0.82, 0)
-      if data.desc and data.desc ~= "" then
-        local lines = SplitByLiteralSep(data.desc, "\n")
-        for j = 1, table.getn(lines) do
-          local line = lines[j]
-          if line and line ~= "" then
-            GameTooltip:AddLine(line, 1, 1, 1, true)
-          end
-        end
-      end
-      GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    self.talentPopup.talentButtons[i] = btn
-    return btn
-  end
-
-  for i = 1, table.getn(talents) do
-    local talent = talents[i]
-    local btn = AcquireTalentButton(i)
-    local col = tonumber(talent.column) or 1
-    local tier = tonumber(talent.tier) or 1
-    if col < 1 then col = 1 end
-    if col > 4 then col = 4 end
-    if tier < 1 then tier = 1 end
-    if tier > 8 then tier = 8 end
-    btn:ClearAllPoints()
-    btn:SetPoint("TOPLEFT", self.talentPopup.treeFrame, "TOPLEFT", 18 + ((col - 1) * 84), -18 - ((tier - 1) * 58))
-    btn.talentData = talent
-    btn.icon:SetTexture(talent.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
-
-    local rank = tonumber(talent.rank) or 0
-    local maxRank = tonumber(talent.maxRank) or 0
-    btn.rankText:SetText("|cFFFFD700" .. tostring(rank) .. "|r/" .. tostring(maxRank))
-    if rank > 0 then
-      btn.icon:SetVertexColor(1, 1, 1, 1)
-      btn.dim:Hide()
-      btn:SetBackdropBorderColor(0.75, 0.75, 0.6, 0.9)
-    else
-      btn.icon:SetVertexColor(0.45, 0.45, 0.45, 1)
-      btn.dim:Show()
-      btn:SetBackdropBorderColor(0.35, 0.35, 0.35, 0.75)
-    end
-    btn:Show()
-  end
-
-  for i = table.getn(talents) + 1, table.getn(self.talentPopup.talentButtons) do
-    self.talentPopup.talentButtons[i]:Hide()
-  end
-
-  if table.getn(talents) > 0 then
-    self.talentPopup.emptyText:Hide()
-  else
-    if isSelf then
-      self.talentPopup.emptyText:SetText("|cFF888888No talents learned yet.|r")
-    else
-      self.talentPopup.emptyText:SetText("|cFF888888Waiting for " .. playerName .. "'s talent broadcast...|r")
-    end
-    self.talentPopup.emptyText:Show()
-  end
-end
-
 function LeafVE.UI:CreateAchievementListPopup()
   if self.achPopup then return end
   
@@ -9006,10 +7981,6 @@ function LeafVE.UI:RefreshLeaderboard(panelName)
             if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
               LeafVE.UI.gearPopup:Hide()
             end
-            if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-              LeafVE.UI.talentPopup:Hide()
-            end
-            LeafVE.UI:HideNativeTalentFrame()
             LeafVE.UI.inspectedPlayer = this.playerName
             LeafVE.UI:ShowPlayerCard(this.playerName)
           end
@@ -9293,12 +8264,6 @@ btn:SetScript("OnClick", function()
   if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
     LeafVE.UI.gearPopup:Hide()
   end
-  
-  -- Close talent popup when switching players
-  if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-    LeafVE.UI.talentPopup:Hide()
-  end
-  LeafVE.UI:HideNativeTalentFrame()
   
   if LeafVE.UI.cardCurrentPlayer ~= this.playerName then
     LeafVE.UI.inspectedPlayer = this.playerName
@@ -11473,10 +10438,6 @@ function LeafVE.UI:RefreshAchievementsLeaderboard()
             if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
               LeafVE.UI.gearPopup:Hide()
             end
-            if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-              LeafVE.UI.talentPopup:Hide()
-            end
-            LeafVE.UI:HideNativeTalentFrame()
             LeafVE.UI.inspectedPlayer = this.playerName
             LeafVE.UI:ShowPlayerCard(this.playerName)
           end
@@ -11574,8 +10535,6 @@ function LeafVE.UI:Build()
       if LeafVE.UI.allBadgesFrame then LeafVE.UI.allBadgesFrame:Hide() end
       if LeafVE.UI.achPopup then LeafVE.UI.achPopup:Hide() end
       if LeafVE.UI.gearPopup then LeafVE.UI.gearPopup:Hide() end
-      if LeafVE.UI.talentPopup then LeafVE.UI.talentPopup:Hide() end
-      LeafVE.UI:HideNativeTalentFrame()
     end)
   else
     local _prevOnHide = f:GetScript("OnHide")
@@ -11584,8 +10543,6 @@ function LeafVE.UI:Build()
       if LeafVE.UI.allBadgesFrame then LeafVE.UI.allBadgesFrame:Hide() end
       if LeafVE.UI.achPopup then LeafVE.UI.achPopup:Hide() end
       if LeafVE.UI.gearPopup then LeafVE.UI.gearPopup:Hide() end
-      if LeafVE.UI.talentPopup then LeafVE.UI.talentPopup:Hide() end
-      LeafVE.UI:HideNativeTalentFrame()
     end)
   end
   
@@ -12404,7 +11361,6 @@ ef:RegisterEvent("CHAT_MSG_GUILD")
 ef:RegisterEvent("CHAT_MSG_WHISPER")
 ef:RegisterEvent("CHAT_MSG_COMBAT_HOSTILE_DEATH")
 ef:RegisterEvent("UNIT_INVENTORY_CHANGED")
-ef:RegisterEvent("CHARACTER_POINTS_CHANGED")
 
 local groupCheckTimer = 0
 local notificationTimer = 0
@@ -12501,8 +11457,6 @@ ef:SetScript("OnEvent", function()
           -- Broadcast gear so guildmates can cache it
           LeafVE.lastGearBroadcast = 0  -- bypass throttle for login broadcast
           LeafVE:BroadcastMyGear()
-          LeafVE.lastTalentBroadcast = 0  -- bypass throttle for login broadcast
-          LeafVE:BroadcastMyTalents(true)
         end
         broadcastFrame:SetScript("OnUpdate", nil)
       end
@@ -12580,19 +11534,6 @@ ef:SetScript("OnEvent", function()
     end
     return
   end
-
-  if event == "CHARACTER_POINTS_CHANGED" then
-    LeafVE:CaptureAndCacheMyTalents(true)
-    LeafVE:BroadcastMyTalents(true)
-    local me = ShortName(UnitName("player"))
-    if me and LeafVE.UI and LeafVE.UI.cardCurrentPlayer and Lower(LeafVE.UI.cardCurrentPlayer) == Lower(me) then
-      LeafVE.UI:ShowPlayerCard(me)
-      if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-        LeafVE.UI:RefreshTalentPopup(me, true)
-      end
-    end
-    return
-  end
 end)
 
 local updateFrame = CreateFrame("Frame")
@@ -12626,7 +11567,6 @@ updateFrame:SetScript("OnUpdate", function()
       LeafVE:BroadcastBadgeProgress()
       LeafVE:BroadcastLeaderboardData()
       LeafVE:BroadcastMyGear()
-      LeafVE:BroadcastMyTalents()
     end
   end
 
