@@ -6715,108 +6715,123 @@ local function ParseStatLine(line, stats)
   line = string.gsub(line, "|c%x%x%x%x%x%x%x%x", "")
   line = string.gsub(line, "|r", "")
 
+  local function ExtractNumber(pattern)
+    local captured
+    if string.match then
+      captured = string.match(line, pattern)
+    end
+    if captured == nil then
+      local _, _, fallbackCapture = string.find(line, pattern)
+      captured = fallbackCapture
+    end
+    if captured == nil then
+      return nil
+    end
+    return tonumber(captured)
+  end
+
   local val
   -- Primary stats (+X StatName)
-  val = tonumber(string.match(line, "%+(%d+) Strength"))
+  val = ExtractNumber("%+(%d+) Strength")
   if val then stats.str = (stats.str or 0) + val end
 
-  val = tonumber(string.match(line, "%+(%d+) Agility"))
+  val = ExtractNumber("%+(%d+) Agility")
   if val then stats.agi = (stats.agi or 0) + val end
 
-  val = tonumber(string.match(line, "%+(%d+) Stamina"))
+  val = ExtractNumber("%+(%d+) Stamina")
   if val then stats.sta = (stats.sta or 0) + val end
 
-  val = tonumber(string.match(line, "%+(%d+) Intellect"))
+  val = ExtractNumber("%+(%d+) Intellect")
   if val then stats.int_ = (stats.int_ or 0) + val end
 
-  val = tonumber(string.match(line, "%+(%d+) Spirit"))
+  val = ExtractNumber("%+(%d+) Spirit")
   if val then stats.spi = (stats.spi or 0) + val end
 
-  val = tonumber(string.match(line, "%+(%d+) Attack Power"))
+  val = ExtractNumber("%+(%d+) Attack Power")
   if val then stats.ap = (stats.ap or 0) + val end
 
   -- Hit chance (split melee and spell hit)
   if string.find(line, "chance to hit with spells") then
-    val = tonumber(string.match(line, "by (%d+)%%"))
+    val = ExtractNumber("by (%d+)%%")
     if val then stats.spellhit = (stats.spellhit or 0) + val end
   elseif string.find(line, "chance to hit") then
-    val = tonumber(string.match(line, "by (%d+)%%"))
+    val = ExtractNumber("by (%d+)%%")
     if val then stats.hit = (stats.hit or 0) + val end
   end
 
   -- Melee Crit (not spell crit)
   if string.find(line, "chance to get a critical strike") and not string.find(line, "with spells") then
-    val = tonumber(string.match(line, "by (%d+)%%"))
+    val = ExtractNumber("by (%d+)%%")
     if val then stats.crit = (stats.crit or 0) + val end
   end
 
   -- Spell Crit
   if string.find(line, "critical strike with spells") then
-    val = tonumber(string.match(line, "by (%d+)%%"))
+    val = ExtractNumber("by (%d+)%%")
     if val then stats.spellcrit = (stats.spellcrit or 0) + val end
   end
 
   -- Spell Damage + Healing combined
   if string.find(line, "Increases damage and healing done by magical spells") then
-    val = tonumber(string.match(line, "up to (%d+)"))
+    val = ExtractNumber("up to (%d+)")
     if val then
       stats.spelldmg = (stats.spelldmg or 0) + val
       stats.healing = (stats.healing or 0) + val
     end
   -- Spell Damage only
   elseif string.find(line, "Increases damage done by magical spells") then
-    val = tonumber(string.match(line, "up to (%d+)"))
+    val = ExtractNumber("up to (%d+)")
     if val then stats.spelldmg = (stats.spelldmg or 0) + val end
   -- Healing only
   elseif string.find(line, "Increases healing done by spells") then
-    val = tonumber(string.match(line, "up to (%d+)"))
+    val = ExtractNumber("up to (%d+)")
     if val then stats.healing = (stats.healing or 0) + val end
   end
 
   -- Mana per 5
-  val = tonumber(string.match(line, "Restores (%d+) mana per 5 sec"))
+  val = ExtractNumber("Restores (%d+) mana per 5 sec")
   if val then stats.mp5 = (stats.mp5 or 0) + val end
 
   -- Defensive combat stats
-  val = tonumber(string.match(line, "chance to dodge an attack by (%d+)%%"))
+  val = ExtractNumber("chance to dodge an attack by (%d+)%%")
   if val then stats.dodge = (stats.dodge or 0) + val end
 
-  val = tonumber(string.match(line, "chance to parry an attack by (%d+)%%"))
+  val = ExtractNumber("chance to parry an attack by (%d+)%%")
   if val then stats.parry = (stats.parry or 0) + val end
 
-  val = tonumber(string.match(line, "chance to block attacks with a shield by (%d+)%%"))
+  val = ExtractNumber("chance to block attacks with a shield by (%d+)%%")
   if not val then
-    val = tonumber(string.match(line, "chance to block by (%d+)%%"))
+    val = ExtractNumber("chance to block by (%d+)%%")
   end
   if val then stats.block = (stats.block or 0) + val end
 
-  val = tonumber(string.match(line, "Increases defense by (%d+)"))
+  val = ExtractNumber("Increases defense by (%d+)")
   if val then stats.defense = (stats.defense or 0) + val end
 
   -- Haste
-  val = tonumber(string.match(line, "attack speed by (%d+)%%"))
+  val = ExtractNumber("attack speed by (%d+)%%")
   if val then stats.haste = (stats.haste or 0) + val end
 
-  val = tonumber(string.match(line, "spell casting speed by (%d+)%%"))
+  val = ExtractNumber("spell casting speed by (%d+)%%")
   if val then stats.spellhaste = (stats.spellhaste or 0) + val end
 
   -- Penetration stats
-  val = tonumber(string.match(line, "Ignores (%d+) of your target's armor"))
+  val = ExtractNumber("Ignores (%d+) of your target's armor")
   if not val then
-    val = tonumber(string.match(line, "armor penetration by (%d+)"))
+    val = ExtractNumber("armor penetration by (%d+)")
   end
   if val then stats.armorpen = (stats.armorpen or 0) + val end
 
-  val = tonumber(string.match(line, "magical resistances of your spell targets by (%d+)"))
+  val = ExtractNumber("magical resistances of your spell targets by (%d+)")
   if not val then
-    val = tonumber(string.match(line, "spell penetration by (%d+)"))
+    val = ExtractNumber("spell penetration by (%d+)")
   end
   if val then stats.spellpen = (stats.spellpen or 0) + val end
 
   -- Weapon skill
-  val = tonumber(string.match(line, "Increased .+ skill by (%d+)"))
+  val = ExtractNumber("Increased .+ skill by (%d+)")
   if not val then
-    val = tonumber(string.match(line, "Increased .+ %+(%d+)"))
+    val = ExtractNumber("Increased .+ %+(%d+)")
   end
   if val then stats.wepskill = (stats.wepskill or 0) + val end
 end
@@ -13663,3 +13678,9 @@ end
 Print("|cFF2DD35CLeaf Village Legends|r v"..LeafVE.version.." loaded!")
 Print("Type |cFFFFD700/lve|r or |cFFFFD700/leaf|r to open the UI")
 Print("Type |cFFFFD700/lvedebug|r for debug commands")
+
+
+
+
+
+
