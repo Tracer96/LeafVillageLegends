@@ -5090,6 +5090,19 @@ function LeafVE:BuildGuildBankDisplayItems(snapshot)
     return {}
   end
 
+  local cacheKey = table.concat({
+    tostring(bankSnapshot.owner or ""),
+    tostring(bankSnapshot.updatedAt or 0),
+    tostring(bankSnapshot.uniqueItems or 0),
+    tostring(bankSnapshot.totalItems or 0),
+    tostring(self:GetGuildBankRequestSignature()),
+    tostring(self:GetGuildBankHighValueSignature()),
+    tostring(self:GetGuildBankCategoryOverrideSignature()),
+  }, "|")
+  if self.guildBankDisplayItemsCacheKey == cacheKey and type(self.guildBankDisplayItemsCache) == "table" then
+    return self.guildBankDisplayItemsCache
+  end
+
   local items = {}
   for itemKey, rawCount in pairs(bankSnapshot.counts) do
     local itemId = tonumber(itemKey)
@@ -5133,6 +5146,8 @@ function LeafVE:BuildGuildBankDisplayItems(snapshot)
     end
     return an < bn
   end)
+  self.guildBankDisplayItemsCacheKey = cacheKey
+  self.guildBankDisplayItemsCache = items
   return items
 end
 
@@ -5171,10 +5186,97 @@ function LeafVE:GetGuildBankCategoryOverrideDB()
   return LeafVE_GlobalDB.guildBankCategoryOverrides
 end
 
+function LeafVE:GetGuildBankCategoryLearningDB()
+  EnsureDB()
+  if type(LeafVE_GlobalDB.guildBankCategoryLearning) ~= "table" then
+    LeafVE_GlobalDB.guildBankCategoryLearning = {}
+  end
+  return LeafVE_GlobalDB.guildBankCategoryLearning
+end
+
+function LeafVE:BuildGuildBankCategoryLearningKey(itemId, fallbackName, itemInfo)
+  local info = itemInfo
+  if type(info) ~= "table" then
+    info = self:GetGuildBankItemInfoRecord(itemId, fallbackName)
+  end
+  local name = Lower(Trim(tostring((info and info.name) or fallbackName or "")))
+  if name == "" then
+    return nil
+  end
+  return "name:" .. name
+end
+
+function LeafVE:GetGuildBankLearnedCategoryTab(itemId, fallbackName, itemInfo)
+  local key = self:BuildGuildBankCategoryLearningKey(itemId, fallbackName, itemInfo)
+  if not key then
+    return nil
+  end
+  local record = self:GetGuildBankCategoryLearningDB()[key]
+  local tabKey = record and tostring(record.tabKey or "") or ""
+  if self:IsGuildBankManualCategoryTab(tabKey) then
+    return tabKey
+  end
+  return nil
+end
+
+function LeafVE:SetGuildBankLearnedCategoryTab(itemId, tabKey, updatedAt, updatedBy, fallbackName, itemInfo)
+  local key = self:BuildGuildBankCategoryLearningKey(itemId, fallbackName, itemInfo)
+  if not key then
+    return nil
+  end
+
+  local normalizedTabKey = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
+  local store = self:GetGuildBankCategoryLearningDB()
+  local when = tonumber(updatedAt) or Now()
+  local existing = store[key]
+  local priorUpdatedAt = existing and (tonumber(existing.updatedAt or 0) or 0) or 0
+  if when < priorUpdatedAt then
+    return existing
+  end
+  if when <= priorUpdatedAt then
+    when = priorUpdatedAt + 1
+  end
+
+  if normalizedTabKey == "" then
+    store[key] = nil
+    return nil
+  end
+
+  local record = existing or { key = key, tabKey = normalizedTabKey, updatedAt = when, updatedBy = "" }
+  record.key = key
+  record.tabKey = normalizedTabKey
+  record.updatedAt = when
+  record.updatedBy = ShortName(updatedBy or UnitName("player")) or ""
+  store[key] = record
+  return record
+end
+
+function LeafVE:GetGuildBankDefaultSectionForTab(tabKey)
+  local defaults = {
+    gear_boes = "usable_upgrades",
+    crafting_materials = "general_mats",
+    raid_materials = "alchemy_reagents",
+    consumables = "potions",
+    miscellaneous = "misc_items",
+  }
+  return defaults[tostring(tabKey or "")] or "misc_items"
+end
+
 function LeafVE:GetGuildBankCategoryOverrideSignature()
   local count = 0
   local latest = 0
   for _, record in pairs(self:GetGuildBankCategoryOverrideDB()) do
+    if type(record) == "table" then
+      if self:IsGuildBankManualCategoryTab(record.tabKey) then
+        count = count + 1
+      end
+      local updatedAt = tonumber(record.updatedAt or 0) or 0
+      if updatedAt > latest then
+        latest = updatedAt
+      end
+    end
+  end
+  for _, record in pairs(self:GetGuildBankCategoryLearningDB()) do
     if type(record) == "table" then
       if self:IsGuildBankManualCategoryTab(record.tabKey) then
         count = count + 1
@@ -5216,6 +5318,7 @@ function LeafVE:SetGuildBankItemCategoryOverride(itemId, tabKey, silent, updated
     return nil, "Only Anbu / Sannin / Hokage can manually classify guild bank items."
   end
 
+  local itemInfo = self:GetGuildBankItemInfoRecord(itemId, self:GetWorkOrderItemName(itemId))
   local normalizedTabKey = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
   local store = self:GetGuildBankCategoryOverrideDB()
   local itemKey = tostring(itemId)
@@ -5234,6 +5337,7 @@ function LeafVE:SetGuildBankItemCategoryOverride(itemId, tabKey, silent, updated
   record.updatedAt = when
   record.updatedBy = ShortName(updatedBy or UnitName("player")) or ""
   store[itemKey] = record
+  self:SetGuildBankLearnedCategoryTab(itemId, normalizedTabKey, when, record.updatedBy, itemInfo and itemInfo.name, itemInfo)
 
   if not silent then
     self:BroadcastGuildBankCategoryOverride(record)
@@ -5894,6 +5998,15 @@ function LeafVE:IsRaidOrganizerRank(playerName)
   local info = self.guildRosterCache and self.guildRosterCache[Lower(playerName)] or nil
   local rank = info and info.rank and Lower(Trim(info.rank)) or ""
   return rank == "jonin" or rank == "anbu" or rank == "sannin" or rank == "hokage"
+end
+
+function LeafVE:IsRaidEventCreatorRank(playerName)
+  playerName = ShortName(playerName or UnitName("player"))
+  if not playerName then return false end
+  self:UpdateGuildRosterCache()
+  local info = self.guildRosterCache and self.guildRosterCache[Lower(playerName)] or nil
+  local rank = info and info.rank and Lower(Trim(info.rank)) or ""
+  return ADMIN_RANKS[rank] == true
 end
 
 function LeafVE:CanManageRaidEvent(eventRecord, playerName)
@@ -6713,8 +6826,8 @@ function LeafVE:CreateRaidEvent(raidKey, title, startAt, signupCloseAt, raidSize
   if not me then
     return nil, "Your player name could not be determined."
   end
-  if not self:IsRaidOrganizerRank(me) then
-    return nil, "Only Jonin, Anbu, Sannin, or Hokage can create raid events."
+  if not self:IsRaidEventCreatorRank(me) then
+    return nil, "Only Anbu, Sannin, or Hokage can create raid events."
   end
 
   local now = Now()
@@ -16995,7 +17108,7 @@ function LeafVE.UI:OpenGuildBankPanel()
   self:Refresh()
 end
 
-function LeafVE.UI:RefreshVisibleGuildBankUI(skipRequest)
+function LeafVE.UI:RefreshVisibleGuildBankUIImmediate(skipRequest)
   local panel = self.panels and self.panels.guildBank
   if panel and panel.built and panel.IsVisible and panel:IsVisible() and self.RefreshGuildBankPanel then
     self:RefreshGuildBankPanel(skipRequest)
@@ -17003,6 +17116,39 @@ function LeafVE.UI:RefreshVisibleGuildBankUI(skipRequest)
   if self.guildBankPopup and self.guildBankPopup:IsVisible() then
     self:RefreshGuildBankPopup(skipRequest)
   end
+end
+
+function LeafVE.UI:RefreshVisibleGuildBankUI(skipRequest)
+  if not self then return end
+
+  if self._guildBankRefreshPendingSkipRequest == nil then
+    self._guildBankRefreshPendingSkipRequest = not not skipRequest
+  elseif skipRequest == false then
+    self._guildBankRefreshPendingSkipRequest = false
+  end
+
+  if self._guildBankRefreshScheduled then
+    return
+  end
+  self._guildBankRefreshScheduled = true
+
+  if not self._guildBankRefreshFrame then
+    self._guildBankRefreshFrame = CreateFrame("Frame")
+  end
+
+  local owner = self
+  local waitTime = 0
+  self._guildBankRefreshFrame:SetScript("OnUpdate", function()
+    waitTime = waitTime + (arg1 or 0)
+    if waitTime < 0.05 then
+      return
+    end
+    this:SetScript("OnUpdate", nil)
+    owner._guildBankRefreshScheduled = nil
+    local useSkipRequest = owner._guildBankRefreshPendingSkipRequest and true or false
+    owner._guildBankRefreshPendingSkipRequest = nil
+    owner:RefreshVisibleGuildBankUIImmediate(useSkipRequest)
+  end)
 end
 
 LeafVE.guildBankPanelTabs = {
@@ -17665,6 +17811,11 @@ function LeafVE:ClassifyGuildBankDisplayItem(item)
   if type(itemInfo) ~= "table" or tonumber(itemInfo.itemId or 0) ~= (itemId or 0) then
     itemInfo = self:GetGuildBankItemInfoRecord(itemId, item.name)
     item.itemInfo = itemInfo
+  end
+
+  local learnedTabKey = self:GetGuildBankLearnedCategoryTab(itemId, itemInfo and itemInfo.name or item.name, itemInfo)
+  if learnedTabKey then
+    return learnedTabKey, self:GetGuildBankDefaultSectionForTab(learnedTabKey)
   end
 
   local lowerName = itemInfo.lowerName or Lower(tostring(item.name or ""))
@@ -24084,6 +24235,25 @@ if type(LeafVE_RaidCatalogSource) ~= "table" then
       },
     },
     {
+      key = "UpperBlackrockSpire",
+      name = "Upper Blackrock Spire",
+      raidSize = 10,
+      roleTargets = { tank = 2, healer = 3, melee = 2, ranged = 3, flex = 0 },
+      bosses = {
+        { key = "UBRSEmberseer", name = "Pyroguard Emberseer", kind = "boss" },
+        { key = "UBRSSolakar", name = "Solakar Flamewreath", kind = "boss" },
+        { key = "UBRSFlame", name = "Father Flame", kind = "boss" },
+        { key = "UBRSRunewatcher", name = "Jed Runewatcher", kind = "boss" },
+        { key = "UBRSAnvilcrack", name = "Goraluk Anvilcrack", kind = "boss" },
+        { key = "UBRSRend", name = "Warchief Rend Blackhand", kind = "boss" },
+        { key = "UBRSGyth", name = "Gyth", kind = "boss" },
+        { key = "UBRSBeast", name = "The Beast", kind = "boss" },
+        { key = "UBRSValthalak", name = "Lord Valthalak", kind = "boss" },
+        { key = "UBRSDrakkisath", name = "General Drakkisath", kind = "boss" },
+        { key = "UBRSTrash", name = "Trash Mobs", kind = "boss" },
+      },
+    },
+    {
       key = "BlackwingLair",
       name = "Blackwing Lair",
       raidSize = 40,
@@ -25710,12 +25880,12 @@ function LeafVE.UI:RefreshRaidSignupPanel(skipRequest)
   UpdateWorkOrderModeButtonVisual(panel.modeAdminBtn, panel.mode == "admin")
 
   if panel.mode == "admin" then
-    local canCreate = LeafVE:IsRaidOrganizerRank()
+    local canCreate = LeafVE:IsRaidEventCreatorRank()
     panel.listPane:Hide()
     panel.detailPane:Show()
-    panel.summaryText:SetText("|cFF88CCFFRaid Sign-Ups|r lets Jonin+ post guild raid events and lets the whole guild sign up.")
+    panel.summaryText:SetText("|cFF88CCFFRaid Sign-Ups|r lets Anbu, Sannin, and Hokage post guild raid events while the whole guild signs up.")
     panel.detailTitle:SetText("|cFFFFD700Create Raid Event|r")
-    panel.detailMeta:SetText(canCreate and "|cFF88FF88Jonin, Anbu, Sannin, and Hokage can post guild raid events here.|r" or "|cFFFF6666Only Jonin, Anbu, Sannin, and Hokage can post raid events. Everyone else can still sign up.|r")
+    panel.detailMeta:SetText(canCreate and "|cFF88FF88Anbu, Sannin, and Hokage can post guild raid events here.|r" or "|cFFFF6666Only Anbu, Sannin, and Hokage can post raid events. Everyone else can still sign up.|r")
     LeafVE_RaidUISeedAdminDefaults(panel)
     LeafVE_RaidUIApplyCatalogSelection(panel, 0)
     panel.detailBody:SetText((panel.createRaidKey and LeafVE_RaidUIGetBossSectionText(panel.createRaidKey) or "|cFF888888No raid catalog available.|r"))
