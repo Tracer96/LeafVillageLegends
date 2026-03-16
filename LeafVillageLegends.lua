@@ -1161,6 +1161,7 @@ local function EnsureDB()
   if not LeafVE_GlobalDB.guildBankCache then LeafVE_GlobalDB.guildBankCache = { owner = LeafVE.guildBankOwner, updatedAt = 0, counts = {}, goldCopper = 0 } end
   if not LeafVE_GlobalDB.guildBankRequests then LeafVE_GlobalDB.guildBankRequests = {} end
   if not LeafVE_GlobalDB.guildBankHighValueItems then LeafVE_GlobalDB.guildBankHighValueItems = {} end
+  if not LeafVE_GlobalDB.guildBankCategoryOverrides then LeafVE_GlobalDB.guildBankCategoryOverrides = {} end
   if not LeafVE_GlobalDB.guildEvents then LeafVE_GlobalDB.guildEvents = {} end
   if not LeafVE_GlobalDB.guildEventRSVPs then LeafVE_GlobalDB.guildEventRSVPs = {} end
   if not LeafVE_GlobalDB.raidEvents then LeafVE_GlobalDB.raidEvents = {} end
@@ -4618,12 +4619,125 @@ function LeafVE:IsGuildBankOwner(playerName)
   return SamePlayerName(playerName, self:GetGuildBankOwnerName())
 end
 
+local function CopyGuildBankCountTable(source)
+  local copy = {}
+  if type(source) ~= "table" then
+    return copy
+  end
+
+  for itemKey, rawCount in pairs(source) do
+    local itemId = tonumber(itemKey)
+    local count = tonumber(rawCount) or 0
+    if itemId and itemId > 0 and count > 0 then
+      copy[tostring(itemId)] = count
+    end
+  end
+  return copy
+end
+
+local function CopyGuildBankIconTable(source)
+  local copy = {}
+  if type(source) ~= "table" then
+    return copy
+  end
+
+  for itemKey, iconPath in pairs(source) do
+    local itemId = tonumber(itemKey)
+    local normalizedIcon = NormalizeIconPath(iconPath)
+    if itemId and itemId > 0 and normalizedIcon then
+      copy[tostring(itemId)] = normalizedIcon
+    end
+  end
+  return copy
+end
+
+local function MergeGuildBankCountTables(sourceTables)
+  local counts = {}
+  local itemOrder = {}
+
+  if type(sourceTables) ~= "table" then
+    sourceTables = {}
+  end
+
+  for _, source in ipairs(sourceTables) do
+    if type(source) == "table" then
+      for itemKey, rawCount in pairs(source) do
+        local itemId = tonumber(itemKey)
+        local count = tonumber(rawCount) or 0
+        if itemId and itemId > 0 and count > 0 then
+          local normalizedKey = tostring(itemId)
+          if not counts[normalizedKey] then
+            counts[normalizedKey] = 0
+            table.insert(itemOrder, normalizedKey)
+          end
+          counts[normalizedKey] = counts[normalizedKey] + count
+        end
+      end
+    end
+  end
+
+  table.sort(itemOrder, function(a, b)
+    return (tonumber(a) or 0) < (tonumber(b) or 0)
+  end)
+
+  return counts, itemOrder
+end
+
+local function MergeGuildBankIconTables(sourceTables)
+  local icons = {}
+
+  if type(sourceTables) ~= "table" then
+    sourceTables = {}
+  end
+
+  for _, source in ipairs(sourceTables) do
+    if type(source) == "table" then
+      for itemKey, iconPath in pairs(source) do
+        local itemId = tonumber(itemKey)
+        local normalizedIcon = NormalizeIconPath(iconPath)
+        if itemId and itemId > 0 and normalizedIcon then
+          icons[tostring(itemId)] = normalizedIcon
+        end
+      end
+    end
+  end
+
+  return icons
+end
+
+local function RebuildGuildBankSnapshotTotals(cache)
+  cache.bagCounts = CopyGuildBankCountTable(cache.bagCounts)
+  cache.bankCounts = CopyGuildBankCountTable(cache.bankCounts)
+  cache.bagIcons = CopyGuildBankIconTable(cache.bagIcons)
+  cache.bankIcons = CopyGuildBankIconTable(cache.bankIcons)
+  cache.icons = MergeGuildBankIconTables({cache.bagIcons, cache.bankIcons})
+  cache.counts, cache.itemOrder = MergeGuildBankCountTables({cache.bagCounts, cache.bankCounts})
+  cache.usedSlots = (tonumber(cache.bagUsedSlots) or 0) + (tonumber(cache.bankUsedSlots) or 0)
+  cache.totalSlots = (tonumber(cache.bagTotalSlots) or 0) + (tonumber(cache.bankTotalSlots) or 0)
+  cache.totalItems = (tonumber(cache.bagTotalItems) or 0) + (tonumber(cache.bankTotalItems) or 0)
+  cache.uniqueItems = table.getn(cache.itemOrder or {})
+  return cache
+end
+
 function LeafVE:ClearGuildBankSnapshot(ownerName)
   local cache = self:GetGuildBankSnapshot()
   cache.owner = ShortName(ownerName or self:GetGuildBankOwnerName()) or self:GetGuildBankOwnerName()
   cache.updatedAt = 0
+  cache.remoteMergedSnapshot = nil
+  cache.bagCounts = {}
+  cache.bankCounts = {}
+  cache.bagIcons = {}
+  cache.bankIcons = {}
+  cache.icons = {}
   cache.counts = {}
   cache.itemOrder = {}
+  cache.bagUsedSlots = 0
+  cache.bagTotalSlots = 0
+  cache.bagTotalItems = 0
+  cache.bankUsedSlots = 0
+  cache.bankTotalSlots = 0
+  cache.bankTotalItems = 0
+  cache.bankUpdatedAt = 0
   cache.usedSlots = 0
   cache.totalSlots = 0
   cache.totalItems = 0
@@ -4637,14 +4751,39 @@ function LeafVE:GetGuildBankSnapshot()
   if type(LeafVE_GlobalDB.guildBankCache) ~= "table" then
     LeafVE_GlobalDB.guildBankCache = { owner = self:GetGuildBankOwnerName(), updatedAt = 0, counts = {}, goldCopper = 0 }
   end
-  if type(LeafVE_GlobalDB.guildBankCache.counts) ~= "table" then
-    LeafVE_GlobalDB.guildBankCache.counts = {}
+
+  local cache = LeafVE_GlobalDB.guildBankCache
+  if type(cache.counts) ~= "table" then
+    cache.counts = {}
   end
-  if not LeafVE_GlobalDB.guildBankCache.owner or LeafVE_GlobalDB.guildBankCache.owner == "" then
-    LeafVE_GlobalDB.guildBankCache.owner = self:GetGuildBankOwnerName()
+  if type(cache.bagCounts) ~= "table" then
+    cache.bagCounts = CopyGuildBankCountTable(cache.counts)
   end
-  LeafVE_GlobalDB.guildBankCache.goldCopper = tonumber(LeafVE_GlobalDB.guildBankCache.goldCopper) or 0
-  return LeafVE_GlobalDB.guildBankCache
+  if type(cache.bankCounts) ~= "table" then
+    cache.bankCounts = {}
+  end
+  if type(cache.bagIcons) ~= "table" then
+    cache.bagIcons = CopyGuildBankIconTable(cache.icons)
+  end
+  if type(cache.bankIcons) ~= "table" then
+    cache.bankIcons = {}
+  end
+  if type(cache.icons) ~= "table" then
+    cache.icons = {}
+  end
+  if not cache.owner or cache.owner == "" then
+    cache.owner = self:GetGuildBankOwnerName()
+  end
+  cache.bagUsedSlots = tonumber(cache.bagUsedSlots) or tonumber(cache.usedSlots) or 0
+  cache.bagTotalSlots = tonumber(cache.bagTotalSlots) or tonumber(cache.totalSlots) or 0
+  cache.bagTotalItems = tonumber(cache.bagTotalItems) or tonumber(cache.totalItems) or 0
+  cache.bankUsedSlots = tonumber(cache.bankUsedSlots) or 0
+  cache.bankTotalSlots = tonumber(cache.bankTotalSlots) or 0
+  cache.bankTotalItems = tonumber(cache.bankTotalItems) or 0
+  cache.bankUpdatedAt = tonumber(cache.bankUpdatedAt) or 0
+  cache.goldCopper = tonumber(cache.goldCopper) or 0
+  RebuildGuildBankSnapshotTotals(cache)
+  return cache
 end
 
 function FormatGuildBankMoney(copper)
@@ -4747,69 +4886,158 @@ function LeafVE:SetGuildBankOwner(ownerName, suppressBroadcast, updatedAt, updat
     end
   end
 
-  if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-    LeafVE.UI:RefreshGuildBankPopup(true)
+  if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+    LeafVE.UI:RefreshVisibleGuildBankUI(true)
   end
 
   return config
 end
 
-function LeafVE:CaptureAndCacheGuildBankSnapshot()
+function LeafVE:IsGuildBankBankFrameVisible()
+  local me = ShortName(UnitName("player"))
+  if not me or not self:IsGuildBankOwner(me) then
+    return false
+  end
+  return BankFrame and BankFrame.IsVisible and BankFrame:IsVisible() or false
+end
+
+function LeafVE:ApplyGuildBankOwnerBankMode(active)
+  active = active and true or false
+  if self.guildBankOwnerBankMode == active then
+    return
+  end
+  self.guildBankOwnerBankMode = active
+
+  if self.HideGuildBankCategoryMenu then
+    self:HideGuildBankCategoryMenu()
+  end
+
+  local frames = {}
+  if self.UI then
+    if self.UI.frame then
+      table.insert(frames, self.UI.frame)
+    end
+    if self.UI.guildBankPopup then
+      table.insert(frames, self.UI.guildBankPopup)
+    end
+  end
+
+  for i = 1, table.getn(frames) do
+    local frame = frames[i]
+    if frame then
+      if active then
+        if frame.GetFrameStrata and not frame._leafBankPrevStrata then
+          frame._leafBankPrevStrata = frame:GetFrameStrata()
+        end
+        if frame.GetFrameLevel and not frame._leafBankPrevLevel then
+          frame._leafBankPrevLevel = frame:GetFrameLevel()
+        end
+        if frame.SetFrameStrata then
+          frame:SetFrameStrata("LOW")
+        end
+        if frame.SetFrameLevel then
+          frame:SetFrameLevel(1)
+        end
+      else
+        if frame.SetFrameStrata then
+          frame:SetFrameStrata(frame._leafBankPrevStrata or "MEDIUM")
+        end
+        if frame.SetFrameLevel then
+          frame:SetFrameLevel(frame._leafBankPrevLevel or 1)
+        end
+        frame._leafBankPrevStrata = nil
+        frame._leafBankPrevLevel = nil
+      end
+    end
+  end
+end
+
+function LeafVE:CaptureAndCacheGuildBankSnapshot(includeBank)
   EnsureDB()
   local me = ShortName(UnitName("player"))
   if not me or not self:IsGuildBankOwner(me) then
     return nil
   end
 
-  local counts = {}
-  local itemOrder = {}
-  local usedSlots = 0
-  local totalSlots = 0
-  local totalItems = 0
-  local maxBag = NUM_BAG_FRAMES or 4
-  for bag = 0, maxBag do
-    local bagSlots = GetContainerNumSlots and tonumber(GetContainerNumSlots(bag)) or 0
-    if bagSlots and bagSlots > 0 then
-      totalSlots = totalSlots + bagSlots
-      for slot = 1, bagSlots do
-        local itemLink = GetContainerItemLink and GetContainerItemLink(bag, slot)
-        local itemId = self:ParseItemIDFromLink(itemLink)
-        if itemId then
-          local _, stackCount = GetContainerItemInfo(bag, slot)
-          local itemKey = tostring(itemId)
-          local quantity = tonumber(stackCount) or 1
-          if not counts[itemKey] then
-            counts[itemKey] = 0
-            table.insert(itemOrder, itemKey)
+  local function CaptureContainerRange(startBag, endBag)
+    local counts = {}
+    local icons = {}
+    local usedSlots = 0
+    local totalSlots = 0
+    local totalItems = 0
+
+    for bag = startBag, endBag do
+      local bagSlots = GetContainerNumSlots and tonumber(GetContainerNumSlots(bag)) or 0
+      if bagSlots and bagSlots > 0 then
+        totalSlots = totalSlots + bagSlots
+        for slot = 1, bagSlots do
+          local itemLink = GetContainerItemLink and GetContainerItemLink(bag, slot)
+          local itemId = self:ParseItemIDFromLink(itemLink)
+          if itemId then
+            local itemTexture, stackCount = GetContainerItemInfo(bag, slot)
+            local itemKey = tostring(itemId)
+            local quantity = tonumber(stackCount) or 1
+            local iconPath = NormalizeIconPath(itemTexture) or self:ResolveIconForItemID(itemId)
+            counts[itemKey] = (counts[itemKey] or 0) + quantity
+            if iconPath then
+              icons[itemKey] = iconPath
+            end
+            usedSlots = usedSlots + 1
+            totalItems = totalItems + quantity
           end
-          counts[itemKey] = counts[itemKey] + quantity
-          usedSlots = usedSlots + 1
-          totalItems = totalItems + quantity
         end
       end
     end
+
+    return counts, icons, usedSlots, totalSlots, totalItems
   end
 
-  table.sort(itemOrder, function(a, b)
-    return (tonumber(a) or 0) < (tonumber(b) or 0)
-  end)
+  local shouldIncludeBank = includeBank
+  if shouldIncludeBank == nil then
+    shouldIncludeBank = self:IsGuildBankBankFrameVisible()
+  end
 
-  LeafVE_GlobalDB.guildBankCache = {
-    owner = me,
-    updatedAt = Now(),
-    counts = counts,
-    itemOrder = itemOrder,
-    usedSlots = usedSlots,
-    totalSlots = totalSlots,
-    totalItems = totalItems,
-    uniqueItems = table.getn(itemOrder),
-    goldCopper = GetMoney and (tonumber(GetMoney()) or 0) or 0,
-  }
-  return LeafVE_GlobalDB.guildBankCache
+  local cache = self:GetGuildBankSnapshot()
+  cache.remoteMergedSnapshot = nil
+  local bagCounts, bagIcons, bagUsedSlots, bagTotalSlots, bagTotalItems = CaptureContainerRange(0, NUM_BAG_FRAMES or 4)
+  cache.bagCounts = bagCounts
+  cache.bagIcons = bagIcons
+  cache.bagUsedSlots = bagUsedSlots
+  cache.bagTotalSlots = bagTotalSlots
+  cache.bagTotalItems = bagTotalItems
+
+  if shouldIncludeBank then
+    local bankCounts, bankIcons, bankUsedSlots, bankTotalSlots, bankTotalItems = CaptureContainerRange(BANK_CONTAINER or -1, BANK_CONTAINER or -1)
+    local bankBagStart = (NUM_BAG_SLOTS or NUM_BAG_FRAMES or 4) + 1
+    local bankBagCount = NUM_BANKBAGSLOTS or NUM_BANKBAG_SLOTS or 6
+    if bankBagCount > 0 then
+      local bankBagCounts, bankBagIcons, bankBagUsedSlots, bankBagTotalSlots, bankBagTotalItems =
+        CaptureContainerRange(bankBagStart, bankBagStart + bankBagCount - 1)
+      bankCounts = MergeGuildBankCountTables({bankCounts, bankBagCounts})
+      bankIcons = MergeGuildBankIconTables({bankIcons, bankBagIcons})
+      bankUsedSlots = bankUsedSlots + bankBagUsedSlots
+      bankTotalSlots = bankTotalSlots + bankBagTotalSlots
+      bankTotalItems = bankTotalItems + bankBagTotalItems
+    end
+
+    cache.bankCounts = bankCounts
+    cache.bankIcons = bankIcons
+    cache.bankUsedSlots = bankUsedSlots
+    cache.bankTotalSlots = bankTotalSlots
+    cache.bankTotalItems = bankTotalItems
+    cache.bankUpdatedAt = Now()
+  end
+
+  cache.owner = me
+  cache.updatedAt = Now()
+  cache.goldCopper = GetMoney and (tonumber(GetMoney()) or 0) or 0
+  RebuildGuildBankSnapshotTotals(cache)
+  LeafVE_GlobalDB.guildBankCache = cache
+  return cache
 end
 
-function LeafVE:BroadcastGuildBankSnapshot(force)
-  local snapshot = self:CaptureAndCacheGuildBankSnapshot()
+function LeafVE:BroadcastGuildBankSnapshot(force, includeBank)
+  local snapshot = self:CaptureAndCacheGuildBankSnapshot(includeBank)
   if not snapshot then
     return nil
   end
@@ -4833,6 +5061,7 @@ function LeafVE:BroadcastGuildBankSnapshot(force)
     "GUILD"
   )
   SendChunkedSnapshot("GBANK:", snapshot.owner, snapshot.updatedAt or now, snapshot.itemOrder or {}, snapshot.counts or {})
+  SendChunkedSnapshot("GBANKICON:", snapshot.owner, snapshot.updatedAt or now, snapshot.itemOrder or {}, snapshot.icons or {})
   return snapshot
 end
 
@@ -4864,16 +5093,34 @@ function LeafVE:BuildGuildBankDisplayItems(snapshot)
   local items = {}
   for itemKey, rawCount in pairs(bankSnapshot.counts) do
     local itemId = tonumber(itemKey)
-    local count = tonumber(rawCount) or 0
-    if itemId and itemId > 0 and count > 0 then
-      local itemName = self:GetWorkOrderItemName(itemId)
+    local totalCount = tonumber(rawCount) or 0
+    if itemId and itemId > 0 and totalCount > 0 then
+      local itemInfo = self:GetGuildBankItemInfoRecord(itemId, self:GetWorkOrderItemName(itemId))
+      local reservedCount = self:GetGuildBankReservedRequestQuantity(itemId)
+      if reservedCount > totalCount then
+        reservedCount = totalCount
+      end
+      local availableCount = totalCount - reservedCount
+      if availableCount < 0 then
+        availableCount = 0
+      end
       table.insert(items, {
         itemId = itemId,
-        count = count,
-        name = itemName,
-        icon = self:ResolveIconForItemID(itemId) or LEAF_FALLBACK,
-        searchKey = Lower(itemName .. " " .. tostring(itemId)),
+        count = availableCount,
+        totalCount = totalCount,
+        reservedCount = reservedCount,
+        availableCount = availableCount,
+        requestableCount = availableCount,
+        uiQuantityMax = availableCount,
+        name = itemInfo.name,
+        icon = NormalizeIconPath(bankSnapshot.icons and bankSnapshot.icons[itemKey]) or self:ResolveIconForItemID(itemId) or LEAF_FALLBACK,
+        searchKey = Lower(itemInfo.name .. " " .. tostring(itemId) .. " " .. tostring(itemInfo.itemTypeRaw or "") .. " " .. tostring(itemInfo.itemSubTypeRaw or "")),
         isHighValue = self:IsGuildBankItemHighValue(itemId),
+        itemInfo = itemInfo,
+        itemType = itemInfo.itemType,
+        itemSubType = itemInfo.itemSubType,
+        equipLoc = itemInfo.equipLoc,
+        quality = itemInfo.quality,
       })
     end
   end
@@ -4914,6 +5161,128 @@ function LeafVE:GetGuildBankHighValueDB()
     LeafVE_GlobalDB.guildBankHighValueItems = {}
   end
   return LeafVE_GlobalDB.guildBankHighValueItems
+end
+
+function LeafVE:GetGuildBankCategoryOverrideDB()
+  EnsureDB()
+  if type(LeafVE_GlobalDB.guildBankCategoryOverrides) ~= "table" then
+    LeafVE_GlobalDB.guildBankCategoryOverrides = {}
+  end
+  return LeafVE_GlobalDB.guildBankCategoryOverrides
+end
+
+function LeafVE:GetGuildBankCategoryOverrideSignature()
+  local count = 0
+  local latest = 0
+  for _, record in pairs(self:GetGuildBankCategoryOverrideDB()) do
+    if type(record) == "table" then
+      if self:IsGuildBankManualCategoryTab(record.tabKey) then
+        count = count + 1
+      end
+      local updatedAt = tonumber(record.updatedAt or 0) or 0
+      if updatedAt > latest then
+        latest = updatedAt
+      end
+    end
+  end
+  return tostring(count) .. ":" .. tostring(latest)
+end
+
+function LeafVE:GetGuildBankCategoryOverride(itemId)
+  itemId = tonumber(itemId)
+  if not itemId then return nil end
+  local record = self:GetGuildBankCategoryOverrideDB()[tostring(itemId)]
+  if type(record) ~= "table" then
+    return nil
+  end
+  return record
+end
+
+function LeafVE:GetGuildBankItemCategoryOverrideTab(itemId)
+  local record = self:GetGuildBankCategoryOverride(itemId)
+  local tabKey = record and tostring(record.tabKey or "") or ""
+  if self:IsGuildBankManualCategoryTab(tabKey) then
+    return tabKey
+  end
+  return nil
+end
+
+function LeafVE:SetGuildBankItemCategoryOverride(itemId, tabKey, silent, updatedAt, updatedBy)
+  itemId = tonumber(itemId)
+  if not itemId or itemId < 1 then
+    return nil, "Item not found."
+  end
+  if updatedAt == nil and not self:IsAdminRank() then
+    return nil, "Only Anbu / Sannin / Hokage can manually classify guild bank items."
+  end
+
+  local normalizedTabKey = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
+  local store = self:GetGuildBankCategoryOverrideDB()
+  local itemKey = tostring(itemId)
+  local record = store[itemKey] or { itemId = itemId, tabKey = "", updatedAt = 0, updatedBy = "" }
+  local when = tonumber(updatedAt) or Now()
+  local priorUpdatedAt = tonumber(record.updatedAt or 0) or 0
+  if updatedAt ~= nil and when < priorUpdatedAt then
+    return record
+  end
+  if when <= priorUpdatedAt then
+    when = priorUpdatedAt + 1
+  end
+
+  record.itemId = itemId
+  record.tabKey = normalizedTabKey
+  record.updatedAt = when
+  record.updatedBy = ShortName(updatedBy or UnitName("player")) or ""
+  store[itemKey] = record
+
+  if not silent then
+    self:BroadcastGuildBankCategoryOverride(record)
+  end
+  if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+    LeafVE.UI:RefreshVisibleGuildBankUI(true)
+  end
+  return record
+end
+
+function LeafVE:BroadcastGuildBankCategoryOverride(record, messageType)
+  if not record or not record.itemId or not InGuild() then return end
+  SendAddonMessage(
+    "LeafVE",
+    (messageType or "GBANKCLASS:") .. table.concat({
+      tostring(record.itemId or 0),
+      EncodeTalentField(record.tabKey or ""),
+      tostring(record.updatedAt or Now()),
+      EncodeTalentField(record.updatedBy or ""),
+    }, SEP),
+    "GUILD"
+  )
+end
+
+function LeafVE:BroadcastGuildBankCategoryOverrideSnapshot(force)
+  if not InGuild() then return end
+
+  local now = Now()
+  if not force and (now - (self.lastGuildBankCategoryOverrideSyncRespondAt or 0)) < 20 then
+    return
+  end
+  self.lastGuildBankCategoryOverrideSyncRespondAt = now
+
+  for _, record in pairs(self:GetGuildBankCategoryOverrideDB()) do
+    if type(record) == "table" and record.itemId and (((record.tabKey or "") ~= "") or tonumber(record.updatedAt or 0) > 0) then
+      self:BroadcastGuildBankCategoryOverride(record, "GBANKCLASSSYNC:")
+    end
+  end
+end
+
+function LeafVE:RequestGuildBankCategoryOverrideSync(force)
+  if not InGuild() then return end
+
+  local now = Now()
+  if not force and (now - (self.lastGuildBankCategoryOverrideSyncAt or 0)) < 20 then
+    return
+  end
+  self.lastGuildBankCategoryOverrideSyncAt = now
+  SendAddonMessage("LeafVE", force and "GBANKCLASSREQ_FORCE" or "GBANKCLASSREQ", "GUILD")
 end
 
 function LeafVE:GetGuildBankHighValueSignature()
@@ -4981,8 +5350,8 @@ function LeafVE:SetGuildBankItemHighValue(itemId, isHighValue, silent, updatedAt
   if not silent then
     self:BroadcastGuildBankHighValueItem(record)
   end
-  if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-    LeafVE.UI:RefreshGuildBankPopup(true)
+  if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+    LeafVE.UI:RefreshVisibleGuildBankUI(true)
   end
   return record
 end
@@ -5186,6 +5555,48 @@ function LeafVE:GetGuildBankActiveRequests()
   return requests
 end
 
+function LeafVE:GetGuildBankRequestSignature()
+  local count = 0
+  local totalQuantity = 0
+  local latest = 0
+  local weekStart = WeekStartTS(Now())
+  for _, request in pairs(self:GetGuildBankRequestsDB()) do
+    if type(request) == "table"
+      and NormalizeGuildBankRequestStatus(request.status) == "open"
+      and (tonumber(request.createdAt) or 0) >= weekStart then
+      count = count + 1
+      totalQuantity = totalQuantity + (tonumber(request.quantity) or 0)
+      local updatedAt = tonumber(request.updatedAt or request.createdAt or 0) or 0
+      if updatedAt > latest then
+        latest = updatedAt
+      end
+    end
+  end
+  return tostring(count) .. ":" .. tostring(totalQuantity) .. ":" .. tostring(latest)
+end
+
+function LeafVE:GetGuildBankReservedRequestQuantity(itemId, excludeRequesterName)
+  itemId = tonumber(itemId)
+  if not itemId then return 0 end
+
+  local reserved = 0
+  local weekStart = WeekStartTS(Now())
+  local excludeName = ShortName(excludeRequesterName)
+  local excludeLower = excludeName and Lower(excludeName) or nil
+  for _, request in pairs(self:GetGuildBankRequestsDB()) do
+    if type(request) == "table"
+      and request.itemId == itemId
+      and NormalizeGuildBankRequestStatus(request.status) == "open"
+      and (tonumber(request.createdAt) or 0) >= weekStart then
+      local requesterLower = Lower(request.requester or "")
+      if not excludeLower or requesterLower ~= excludeLower then
+        reserved = reserved + (tonumber(request.quantity) or 0)
+      end
+    end
+  end
+  return reserved
+end
+
 function LeafVE:BroadcastGuildBankRequest(request, messageType)
   if not request or not request.id or not InGuild() then return end
 
@@ -5253,8 +5664,8 @@ function LeafVE:HandleIncomingGuildBankRequestMessage(payload)
   }
 
   local stored, changed = self:StoreGuildBankRequestRecord(request)
-  if changed and LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-    LeafVE.UI:RefreshGuildBankPopup(true)
+  if changed and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+    LeafVE.UI:RefreshVisibleGuildBankUI(true)
   end
   return stored
 end
@@ -5266,7 +5677,7 @@ function LeafVE:SubmitGuildBankItemRequest(itemId, quantity)
   end
 
   itemId = tonumber(itemId)
-  quantity = ClampGuildBankRequestQuantity(quantity, 99)
+  local requestedQuantity = ClampGuildBankRequestQuantity(quantity, 99)
   if not itemId or itemId < 1 then
     return nil, "Item not found."
   end
@@ -5276,12 +5687,27 @@ function LeafVE:SubmitGuildBankItemRequest(itemId, quantity)
 
   local now = Now()
   local existing = self:FindOpenGuildBankRequest(me, itemId)
-  if existing and tonumber(existing.quantity or 1) == quantity then
+  if existing and tonumber(existing.quantity or 1) == requestedQuantity then
     return existing
   end
   if not existing and self:GetGuildBankRequestCountThisWeek(me) >= 3 then
     return nil, "You have already used all 3 guild bank requests for this week."
   end
+
+  local snapshot = self:GetGuildBankSnapshot()
+  local totalCount = tonumber(snapshot.counts and snapshot.counts[tostring(itemId)] or 0) or 0
+  local reservedByOthers = self:GetGuildBankReservedRequestQuantity(itemId, me)
+  local requestableCount = totalCount - reservedByOthers
+  if requestableCount < 0 then
+    requestableCount = 0
+  end
+  if requestableCount < 1 then
+    return nil, "No unreserved stock is available for that item right now."
+  end
+  if requestedQuantity > requestableCount then
+    return nil, "Only " .. tostring(requestableCount) .. " unreserved remain for that item."
+  end
+
   local updatedAt = now
   if existing then
     local priorUpdatedAt = tonumber(existing.updatedAt or existing.createdAt or 0) or 0
@@ -5294,7 +5720,7 @@ function LeafVE:SubmitGuildBankItemRequest(itemId, quantity)
     id = existing and tostring(existing.id) or (tostring(me) .. ":" .. tostring(itemId) .. ":" .. tostring(updatedAt)),
     requester = me,
     itemId = itemId,
-    quantity = quantity,
+    quantity = requestedQuantity,
     createdAt = existing and (tonumber(existing.createdAt) or now) or now,
     updatedAt = updatedAt,
     status = "open",
@@ -7320,8 +7746,8 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     local updatedBy = DecodeTalentField(fields[3] or "")
     local priorOwner = self:GetGuildBankOwnerName()
     local config = self:SetGuildBankOwner(ownerName, true, updatedAt, updatedBy ~= "" and updatedBy or sender)
-    if config and Lower(priorOwner or "") ~= Lower(config.owner or "") and LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    if config and Lower(priorOwner or "") ~= Lower(config.owner or "") and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
     return
   end
@@ -7370,21 +7796,38 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
 
     local cache = self:GetGuildBankSnapshot()
     if updatedAt > (cache.updatedAt or 0) then
+      cache.bagCounts = {}
+      cache.bankCounts = {}
+      cache.bagIcons = {}
+      cache.bankIcons = {}
+      cache.icons = {}
       cache.counts = {}
       cache.itemOrder = {}
+      cache.bankUsedSlots = 0
+      cache.bankTotalSlots = 0
+      cache.bankTotalItems = 0
+      cache.bankUpdatedAt = 0
       cache.goldCopper = 0
     end
     if updatedAt >= (cache.updatedAt or 0) then
       cache.owner = sender
       cache.updatedAt = updatedAt
+      cache.remoteMergedSnapshot = true
+      cache.bagUsedSlots = usedSlots
+      cache.bagTotalSlots = totalSlots
+      cache.bagTotalItems = totalItems
+      cache.bankUsedSlots = 0
+      cache.bankTotalSlots = 0
+      cache.bankTotalItems = 0
+      cache.bankUpdatedAt = 0
       cache.usedSlots = usedSlots
       cache.totalSlots = totalSlots
       cache.totalItems = totalItems
       cache.uniqueItems = uniqueItems
       cache.goldCopper = goldCopper
     end
-    if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
     return
   end
@@ -7403,8 +7846,20 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
 
     local cache = self:GetGuildBankSnapshot()
     if updatedAt > (cache.updatedAt or 0) then
+      cache.bagCounts = {}
+      cache.bankCounts = {}
+      cache.bagIcons = {}
+      cache.bankIcons = {}
+      cache.icons = {}
       cache.counts = {}
       cache.itemOrder = {}
+      cache.bagUsedSlots = 0
+      cache.bagTotalSlots = 0
+      cache.bagTotalItems = 0
+      cache.bankUsedSlots = 0
+      cache.bankTotalSlots = 0
+      cache.bankTotalItems = 0
+      cache.bankUpdatedAt = 0
       cache.usedSlots = 0
       cache.totalSlots = 0
       cache.totalItems = 0
@@ -7414,8 +7869,9 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     if updatedAt >= (cache.updatedAt or 0) then
       cache.owner = sender
       cache.updatedAt = updatedAt
-      if type(cache.counts) ~= "table" then
-        cache.counts = {}
+      cache.remoteMergedSnapshot = true
+      if type(cache.bagCounts) ~= "table" then
+        cache.bagCounts = {}
       end
       local startPos = 1
       while startPos <= string.len(itemData) do
@@ -7433,13 +7889,67 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
           local itemKey = string.sub(entry, 1, eqPos - 1)
           local count = tonumber(string.sub(entry, eqPos + 1))
           if itemKey ~= "" and count and count > 0 then
-            cache.counts[itemKey] = count
+            cache.bagCounts[itemKey] = count
           end
         end
       end
+      RebuildGuildBankSnapshotTotals(cache)
     end
-    if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
+    end
+    return
+  end
+
+  if string.sub(message, 1, 10) == "GBANKICON:" then
+    local rest = string.sub(message, 11)
+    local p1 = string.find(rest, ":")
+    if not p1 then return end
+    local declaredName = string.sub(rest, 1, p1 - 1)
+    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) or not self:IsGuildBankOwner(sender) then return end
+    local rest2 = string.sub(rest, p1 + 1)
+    local p2 = string.find(rest2, ":")
+    if not p2 then return end
+    local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
+    local iconData = string.sub(rest2, p2 + 1)
+
+    local cache = self:GetGuildBankSnapshot()
+    if updatedAt > (cache.updatedAt or 0) then
+      cache.bagIcons = {}
+      cache.bankIcons = {}
+      cache.icons = {}
+    end
+    if updatedAt >= (cache.updatedAt or 0) then
+      cache.owner = sender
+      cache.updatedAt = updatedAt
+      cache.remoteMergedSnapshot = true
+      if type(cache.bagIcons) ~= "table" then
+        cache.bagIcons = {}
+      end
+      local startPos = 1
+      while startPos <= string.len(iconData) do
+        local commaPos = string.find(iconData, ",", startPos)
+        local entry
+        if commaPos then
+          entry = string.sub(iconData, startPos, commaPos - 1)
+          startPos = commaPos + 1
+        else
+          entry = string.sub(iconData, startPos)
+          startPos = string.len(iconData) + 1
+        end
+        local eqPos = string.find(entry, "=")
+        if eqPos then
+          local itemKey = string.sub(entry, 1, eqPos - 1)
+          local iconPath = NormalizeIconPath(string.sub(entry, eqPos + 1))
+          if itemKey ~= "" and iconPath then
+            cache.bagIcons[itemKey] = iconPath
+          end
+        end
+      end
+      RebuildGuildBankSnapshotTotals(cache)
+    end
+    if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
     return
   end
@@ -7460,6 +7970,26 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
 
   if string.sub(message, 1, 17) == "GBANKITEMREQSYNC:" then
     self:HandleIncomingGuildBankRequestMessage(string.sub(message, 18))
+    return
+  end
+
+  if message == "GBANKCLASSREQ" or message == "GBANKCLASSREQ_FORCE" then
+    local forceRespond = (message == "GBANKCLASSREQ_FORCE")
+    local me = ShortName(UnitName("player"))
+    if me and sender ~= me then
+      self:BroadcastGuildBankCategoryOverrideSnapshot(forceRespond)
+    end
+    return
+  end
+
+  if string.sub(message, 1, 11) == "GBANKCLASS:" or string.sub(message, 1, 15) == "GBANKCLASSSYNC:" then
+    local payload = string.sub(message, string.sub(message, 1, 15) == "GBANKCLASSSYNC:" and 16 or 12)
+    local fields = SplitByLiteralSep(payload, SEP)
+    local itemId = tonumber(fields[1])
+    local tabKey = DecodeTalentField(fields[2] or "")
+    local updatedAt = tonumber(fields[3]) or Now()
+    local updatedBy = DecodeTalentField(fields[4] or "")
+    self:SetGuildBankItemCategoryOverride(itemId, tabKey ~= "" and tabKey or nil, true, updatedAt, updatedBy ~= "" and updatedBy or sender)
     return
   end
 
@@ -9204,15 +9734,8 @@ end)
       LeafVE.UI.talentPopup:Hide()
     end
     LeafVE.UI:HideNativeTalentFrame()
-
-    if not LeafVE.UI.guildBankPopup then
-      LeafVE.UI:CreateGuildBankPopup()
-    end
-    if LeafVE.UI.guildBankPopup:IsVisible() then
-      LeafVE.UI.guildBankPopup:Hide()
-    else
-      LeafVE.UI:RefreshGuildBankPopup()
-      LeafVE.UI.guildBankPopup:Show()
+    if LeafVE.UI.OpenGuildBankPanel then
+      LeafVE.UI:OpenGuildBankPanel()
     end
   end)
   self.cardGuildBankBtn = guildBankBtn
@@ -13453,26 +13976,21 @@ function CreateGuildBankItemButton(parent)
   btn.icon = icon
 
   local manageBtn = CreateFrame("Button", nil, btn, "UIPanelButtonTemplate")
-  manageBtn:SetWidth(74)
+  manageBtn:SetWidth(78)
   manageBtn:SetHeight(18)
   manageBtn:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -8, -6)
   SkinButtonAccent(manageBtn)
   SetLeafButtonTextColor(manageBtn, THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, 0.96, 0.7)
   manageBtn.owner = btn
+  if manageBtn.RegisterForClicks then
+    manageBtn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+  end
   manageBtn:SetScript("OnClick", function()
     local owner = this.owner
     local item = owner and owner.itemData
     if not item then return end
-    local record, err = LeafVE:SetGuildBankItemHighValue(item.itemId, not LeafVE:IsGuildBankItemHighValue(item.itemId))
-    if not record then
-      if owner.popup and owner.popup.summaryText then
-        owner.popup.summaryText:SetText("|cFFFF6666" .. tostring(err or "Unable to update item category.") .. "|r")
-      end
-      return
-    end
-    if owner.popup then
-      owner.popup.itemCategoryMode = record.isHighValue and "high_value" or "normal"
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    if LeafVE and LeafVE.OpenGuildBankCategoryMenu then
+      LeafVE:OpenGuildBankCategoryMenu(owner)
     end
   end)
   btn.manageBtn = manageBtn
@@ -13508,7 +14026,7 @@ function CreateGuildBankItemButton(parent)
   qtyInput:SetScript("OnEnterPressed", function()
     local owner = this.owner
     local item = owner and owner.itemData
-    local maxCount = item and item.count or 99
+    local maxCount = item and (item.uiQuantityMax or item.requestableCount or item.count) or 99
     local quantity = ClampGuildBankRequestQuantity(this:GetText() or "", maxCount)
     this:SetText(tostring(quantity))
     this:ClearFocus()
@@ -13520,7 +14038,7 @@ function CreateGuildBankItemButton(parent)
   qtyInput:SetScript("OnEditFocusLost", function()
     local owner = this.owner
     local item = owner and owner.itemData
-    local maxCount = item and item.count or 99
+    local maxCount = item and (item.uiQuantityMax or item.requestableCount or item.count) or 99
     local quantity = ClampGuildBankRequestQuantity(this:GetText() or "", maxCount)
     this:SetText(tostring(quantity))
     if owner and owner.popup then
@@ -13542,7 +14060,7 @@ function CreateGuildBankItemButton(parent)
     local owner = this.owner
     local item = owner and owner.itemData
     if not item then return end
-    local quantity = ClampGuildBankRequestQuantity(owner.qtyInput and owner.qtyInput:GetText() or "", item.count or 99)
+    local quantity = ClampGuildBankRequestQuantity(owner.qtyInput and owner.qtyInput:GetText() or "", item and (item.uiQuantityMax or item.requestableCount or item.count) or 99)
     if owner.qtyInput then
       owner.qtyInput:SetText(tostring(quantity))
     end
@@ -13557,9 +14075,11 @@ function CreateGuildBankItemButton(parent)
       end
       return
     end
-    if owner.popup then
+    if owner.popup and owner.popup.isPopup then
       owner.popup.viewMode = "requests"
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    end
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
   end)
   btn.requestBtn = requestBtn
@@ -13593,17 +14113,22 @@ function CreateGuildBankItemButton(parent)
     GameTooltip:ClearLines()
     GameTooltip:SetHyperlink("item:" .. tostring(this.itemData.itemId))
     GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("Guild Bank Count: " .. tostring(this.itemData.count), 1, 0.92, 0.55)
+    GameTooltip:AddLine("Available Now: " .. tostring(this.itemData.availableCount or this.itemData.count or 0), 1, 0.92, 0.55)
+    GameTooltip:AddLine("Reserved in Open Requests: " .. tostring(this.itemData.reservedCount or 0) .. "  |  Total Synced: " .. tostring(this.itemData.totalCount or this.itemData.count or 0), 0.82, 0.82, 0.82)
     GameTooltip:AddLine("Synced from " .. tostring(LeafVE:GetGuildBankOwnerName()), 0.75, 0.95, 0.75)
+    local manualTab = LeafVE:GetGuildBankItemCategoryOverrideTab(this.itemData.itemId)
+    local activeTab = this.popup and this.popup.activeCategoryTab
     GameTooltip:AddLine("Set Qty, then click Request to add this item to the guild bank request queue.", 0.88, 0.88, 0.88, true)
     GameTooltip:AddLine("Requests reset weekly and are limited to 3 per player each cycle.", 0.88, 0.88, 0.88, true)
+    GameTooltip:AddLine("Manual Category: " .. tostring(LeafVE:GetGuildBankManualCategoryDisplayLabel(manualTab)), 0.55, 0.8, 1, true)
     if LeafVE:IsGuildBankItemHighValue(this.itemData.itemId) then
       GameTooltip:AddLine("High Value Item: only Jonin, Anbu, Sannin, and Hokage can request this.", 1, 0.82, 0.45, true)
     else
       GameTooltip:AddLine("Normal Item: any guild member can request this.", 0.75, 0.95, 0.75, true)
     end
     if LeafVE:IsAdminRank() then
-      GameTooltip:AddLine("Admins can use the row toggle to mark or unmark this item as High Value.", 0.88, 0.88, 0.88, true)
+      GameTooltip:AddLine("Click category button: open the category menu.", 0.88, 0.88, 0.88, true)
+      GameTooltip:AddLine("Menu options: Auto, Gear, Crafting Materials, Raid Materials, Consumables, and High Value.", 0.88, 0.88, 0.88, true)
     end
     GameTooltip:Show()
   end)
@@ -13651,8 +14176,8 @@ function CreateGuildBankRequestButton(parent)
     elseif owner.actionType == "fulfill" then
       changed, err = LeafVE:FulfillGuildBankItemRequest(request.id)
     end
-    if changed and owner.popup then
-      LeafVE.UI:RefreshGuildBankPopup(true)
+    if changed and LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
   end)
   btn.actionBtn = actionBtn
@@ -15681,7 +16206,7 @@ function LeafVE.UI:CreateGuildBankPopup()
   subtitleText:SetPoint("TOP", titleText, "BOTTOM", 0, -4)
   subtitleText:SetWidth(360)
   subtitleText:SetJustifyH("CENTER")
-  subtitleText:SetText("Shared inventory synced from " .. tostring(LeafVE:GetGuildBankOwnerName()))
+  subtitleText:SetText("Shared storage synced from " .. tostring(LeafVE:GetGuildBankOwnerName()))
   popup.subtitleText = subtitleText
 
   local summaryText = popup:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -15799,6 +16324,7 @@ function LeafVE.UI:CreateGuildBankPopup()
     LeafVE:RequestGuildBankOwner(true)
     LeafVE:RequestGuildBankSnapshot(true)
     LeafVE:RequestGuildBankItemRequestSync(true)
+    LeafVE:RequestGuildBankCategoryOverrideSync(true)
     LeafVE:RequestGuildBankHighValueSync(true)
     LeafVE.UI:RefreshGuildBankPopup(true)
   end)
@@ -15895,13 +16421,13 @@ function LeafVE.UI:CreateGuildBankPopup()
   hintText:SetWidth(372)
   hintText:SetJustifyH("LEFT")
   hintText:SetJustifyV("TOP")
-  hintText:SetText("|cFFAAAAAAThis panel reads the live inventory snapshot broadcast by " .. tostring(LeafVE:GetGuildBankOwnerName()) .. ".|r")
+  hintText:SetText("|cFFAAAAAAThis panel reads the live bags + bank snapshot broadcast by " .. tostring(LeafVE:GetGuildBankOwnerName()) .. ".|r")
   popup.hintText = hintText
 
   local listFrame = CreateFrame("Frame", nil, inventoryPanel)
   listFrame:SetPoint("TOPLEFT", hintText, "BOTTOMLEFT", 0, -8)
   listFrame:SetPoint("BOTTOMRIGHT", inventoryPanel, "BOTTOMRIGHT", -30, 10)
-  listFrame:EnableMouse(true)
+  listFrame:EnableMouse(false)
   listFrame:EnableMouseWheel(true)
   listFrame.popup = popup
   listFrame:SetScript("OnMouseWheel", function()
@@ -16062,7 +16588,7 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
       popup.hintText:SetText("|cFFAAAAAANormal guild bank items can be requested by any guild member. Switch to High Value for restricted items.|r")
     end
   end
-  local listKey = tostring(ownerName or "") .. "|" .. tostring(config and config.updatedAt or 0) .. "|" .. tostring(updatedAt) .. "|" .. filterText .. "|" .. categoryMode .. "|" .. LeafVE:GetGuildBankHighValueSignature() .. "|" .. tostring(table.getn(items))
+  local listKey = tostring(ownerName or "") .. "|" .. tostring(config and config.updatedAt or 0) .. "|" .. tostring(updatedAt) .. "|" .. filterText .. "|" .. categoryMode .. "|" .. LeafVE:GetGuildBankCategoryOverrideSignature() .. "|" .. LeafVE:GetGuildBankHighValueSignature() .. "|" .. LeafVE:GetGuildBankRequestSignature() .. "|" .. tostring(table.getn(items))
   local filtered = popup.filteredItems or {}
   if popup.lastListKey ~= listKey or not popup.filteredItems then
     filtered = {}
@@ -16109,11 +16635,25 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
       local canRequest = me and LeafVE:CanPlayerRequestGuildBankItem(me, item.itemId)
       local itemKey = tostring(item.itemId or 0)
       local existingRequest = me and LeafVE:FindOpenGuildBankRequest(me, item.itemId) or nil
+      local existingQuantity = existingRequest and (tonumber(existingRequest.quantity or 1) or 1) or 0
+      local requestableCount = tonumber(item.availableCount or item.count or 0) or 0
+      if existingQuantity > 0 then
+        requestableCount = requestableCount + existingQuantity
+      end
+      local quantityMax = requestableCount
+      if existingQuantity > quantityMax then
+        quantityMax = existingQuantity
+      end
+      if quantityMax < 1 then
+        quantityMax = 1
+      end
       local quantity = popup.requestQuantities and popup.requestQuantities[itemKey]
       if not quantity then
-        quantity = existingRequest and tonumber(existingRequest.quantity or 1) or 1
+        quantity = existingQuantity > 0 and existingQuantity or 1
       end
-      quantity = ClampGuildBankRequestQuantity(quantity, item.count or 99)
+      quantity = ClampGuildBankRequestQuantity(quantity, quantityMax)
+      item.requestableCount = requestableCount
+      item.uiQuantityMax = quantityMax
       popup.requestQuantities = popup.requestQuantities or {}
       popup.requestQuantities[itemKey] = quantity
       btn.itemData = item
@@ -16122,23 +16662,22 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
       btn:SetHeight(rowHeight - 4)
       btn:ClearAllPoints()
       btn:SetPoint("TOPLEFT", popup.listFrame, "TOPLEFT", 2, -((row - 1) * rowHeight) - 2)
+      local tabKey, sectionKey = LeafVE:ClassifyGuildBankDisplayItem(item)
+      local sectionInfo = LeafVE:GetGuildBankPanelSectionInfo(tabKey, sectionKey)
       btn.icon:SetTexture(item.icon or LEAF_FALLBACK)
       btn.nameText:SetText(tostring(item.name or ("Item #" .. tostring(item.itemId or 0))))
       if btn.categoryText then
-        if item.isHighValue then
-          btn.categoryText:SetText("|cFFFFD700High Value|r - Jonin, Anbu, Sannin, Hokage")
-        else
-          btn.categoryText:SetText("|cFF88FF88Normal Item|r - Any guild member can request")
-        end
+        btn.categoryText:SetText(LeafVE:GetGuildBankItemCategoryLine(item, sectionInfo))
       end
-      btn.countText:SetText("x" .. tostring(item.count or 0))
+      local availableCount = tonumber(item.availableCount or item.count or 0) or 0
+      btn.countText:SetText("x" .. tostring(availableCount))
       if btn.qtyInput then
         btn.qtyInput:SetText(tostring(quantity))
         if btn.qtyInput.EnableKeyboard then
-          btn.qtyInput:EnableKeyboard(canRequest and true or false)
+          btn.qtyInput:EnableKeyboard((canRequest and (requestableCount > 0 or existingRequest)) and true or false)
         end
         if btn.qtyInput.SetTextColor then
-          if canRequest then
+          if canRequest and (requestableCount > 0 or existingRequest) then
             btn.qtyInput:SetTextColor(1, 1, 1)
           else
             btn.qtyInput:SetTextColor(0.6, 0.6, 0.6)
@@ -16146,7 +16685,7 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
         end
       end
       if btn.qtyBG then
-        if canRequest then
+        if canRequest and (requestableCount > 0 or existingRequest) then
           btn.qtyBG:SetAlpha(1)
         else
           btn.qtyBG:SetAlpha(0.45)
@@ -16154,8 +16693,16 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
       end
       if btn.requestBtn then
         if canRequest then
-          btn.requestBtn:SetText(existingRequest and "Update" or "Request")
-          btn.requestBtn:Enable()
+          if existingRequest then
+            btn.requestBtn:SetText("Update")
+            btn.requestBtn:Enable()
+          elseif requestableCount > 0 then
+            btn.requestBtn:SetText("Request")
+            btn.requestBtn:Enable()
+          else
+            btn.requestBtn:SetText("Reserved")
+            btn.requestBtn:Disable()
+          end
         else
           btn.requestBtn:SetText("Jonin+")
           btn.requestBtn:Disable()
@@ -16164,7 +16711,7 @@ function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, upd
       end
       if btn.manageBtn then
         if isAdmin then
-          btn.manageBtn:SetText(item.isHighValue and "Make Normal" or "Mark HV")
+          btn.manageBtn:SetText(LeafVE:GetGuildBankManualCategoryButtonText(LeafVE:GetGuildBankItemCategoryOverrideTab(item.itemId)))
           btn.manageBtn:Show()
           btn.manageBtn:Enable()
         else
@@ -16274,6 +16821,14 @@ function LeafVE.UI:RefreshGuildBankRequestsView(popup)
     if row <= visibleRows and dataIndex <= rowCount then
       local request = requests[dataIndex]
       local bankCount = tonumber(snapshot.counts and snapshot.counts[tostring(request.itemId)] or 0) or 0
+      local reservedCount = LeafVE:GetGuildBankReservedRequestQuantity(request.itemId)
+      if reservedCount > bankCount then
+        reservedCount = bankCount
+      end
+      local availableCount = bankCount - reservedCount
+      if availableCount < 0 then
+        availableCount = 0
+      end
       btn.requestData = request
       btn.popup = popup
       btn:SetWidth(listWidth - 4)
@@ -16287,7 +16842,7 @@ function LeafVE.UI:RefreshGuildBankRequestsView(popup)
         "  |  " ..
         "Requester: " .. tostring(request.requester or "Unknown") ..
         "  |  Qty " .. tostring(request.quantity or 1) ..
-        "  |  Bank has " .. tostring(bankCount)
+        "  |  Available " .. tostring(availableCount) .. "/" .. tostring(bankCount)
       )
       btn.statusText:SetText("|cFFAAAAAAOpen request.|r Added " .. FormatGuildBankRequestAge(request.updatedAt or request.createdAt))
       if me and Lower(request.requester or "") == Lower(me) then
@@ -16340,10 +16895,14 @@ end
 
 function LeafVE.UI:RefreshGuildBankPopup(skipRequest)
   if not self.guildBankPopup then return end
+  if LeafVE and LeafVE.HideGuildBankCategoryMenu then
+    LeafVE:HideGuildBankCategoryMenu()
+  end
   if not skipRequest then
     LeafVE:RequestGuildBankOwner()
     LeafVE:RequestGuildBankSnapshot()
     LeafVE:RequestGuildBankItemRequestSync()
+    LeafVE:RequestGuildBankCategoryOverrideSync()
     LeafVE:RequestGuildBankHighValueSync()
   end
 
@@ -16361,7 +16920,7 @@ function LeafVE.UI:RefreshGuildBankPopup(skipRequest)
 
   popup.subtitleText:SetText("Designated bank alt: " .. tostring(ownerName))
   if popup.hintText then
-    popup.hintText:SetText("|cFFAAAAAAThis panel reads the live inventory snapshot broadcast by the designated guild bank alt " .. tostring(ownerName) .. ".|r")
+    popup.hintText:SetText("|cFFAAAAAAThis panel reads the live bags + bank snapshot broadcast by the designated guild bank alt " .. tostring(ownerName) .. ".|r")
   end
 
   local isAdmin = LeafVE:IsAdminRank()
@@ -16426,6 +16985,1693 @@ function LeafVE.UI:RefreshGuildBankPopup(skipRequest)
     if popup.inventoryPanel then popup.inventoryPanel:Show() end
     self:RefreshGuildBankInventoryView(popup, snapshot, ownerName, updatedAt, config)
   end
+end
+
+function LeafVE.UI:OpenGuildBankPanel()
+  if self.guildBankPopup and self.guildBankPopup:IsVisible() then
+    self.guildBankPopup:Hide()
+  end
+  self.activeTab = "guildBank"
+  self:Refresh()
+end
+
+function LeafVE.UI:RefreshVisibleGuildBankUI(skipRequest)
+  local panel = self.panels and self.panels.guildBank
+  if panel and panel.built and panel.IsVisible and panel:IsVisible() and self.RefreshGuildBankPanel then
+    self:RefreshGuildBankPanel(skipRequest)
+  end
+  if self.guildBankPopup and self.guildBankPopup:IsVisible() then
+    self:RefreshGuildBankPopup(skipRequest)
+  end
+end
+
+LeafVE.guildBankPanelTabs = {
+  {
+    key = "all_items",
+    label = "All",
+    buttonWidth = 58,
+    sections = {
+      { key = "all_gear", label = "Gear" },
+      { key = "all_crafting", label = "Crafting Materials" },
+      { key = "all_raid", label = "Raid Materials" },
+      { key = "all_consumables", label = "Consumables" },
+      { key = "all_misc", label = "Misc" },
+    },
+  },
+  {
+    key = "gear_boes",
+    label = "Gear",
+    buttonWidth = 72,
+    sections = {
+      { key = "manual_assigned", label = "Manual Assignments" },
+      { key = "pre_raid_bis", label = "Pre-Raid BIS Gear" },
+      { key = "resistance_gear", label = "Resistance Gear" },
+      { key = "boe_epics", label = "BOE Epics" },
+      { key = "usable_upgrades", label = "Usable Upgrades" },
+    },
+  },
+  {
+    key = "crafting_materials",
+    label = "Crafting Materials",
+    buttonWidth = 140,
+    sections = {
+      { key = "manual_assigned", label = "Manual Assignments" },
+      { key = "enchanting_mats", label = "Enchanting Mats" },
+      { key = "bars_ore", label = "Bars / Ore" },
+      { key = "cloth", label = "Cloth" },
+      { key = "leather_hides", label = "Leather / Hides" },
+      { key = "recipes", label = "Recipes / Manuals" },
+      { key = "general_mats", label = "General Mats" },
+    },
+  },
+  {
+    key = "raid_materials",
+    label = "Raid Materials",
+    buttonWidth = 122,
+    sections = {
+      { key = "manual_assigned", label = "Manual Assignments" },
+      { key = "herbs", label = "Herbs" },
+      { key = "elemental_materials", label = "Elemental Materials" },
+      { key = "essence_materials", label = "Essence Materials" },
+      { key = "alchemy_reagents", label = "Alchemy Reagents" },
+    },
+  },
+  {
+    key = "consumables",
+    label = "Consumables",
+    buttonWidth = 112,
+    sections = {
+      { key = "manual_assigned", label = "Manual Assignments" },
+      { key = "flasks", label = "Flasks" },
+      { key = "potions", label = "Potions" },
+      { key = "elixirs", label = "Elixirs / Buffs" },
+      { key = "food_buffs", label = "Food Buffs" },
+      { key = "bandages", label = "Bandages" },
+      { key = "protection_potions", label = "Protection Potions" },
+    },
+  },
+  {
+    key = "miscellaneous",
+    label = "Misc",
+    buttonWidth = 68,
+    sections = {
+      { key = "manual_assigned", label = "Manual Assignments" },
+      { key = "containers", label = "Bags / Containers" },
+      { key = "utility_items", label = "Utility / Keys" },
+      { key = "misc_items", label = "Miscellaneous" },
+    },
+  },
+}
+
+LeafVE.guildBankManualCategoryTabs = {
+  "gear_boes",
+  "crafting_materials",
+  "raid_materials",
+  "consumables",
+  "miscellaneous",
+}
+
+LeafVE.guildBankManualCategoryButtonLabels = {
+  [""] = "Auto",
+  gear_boes = "Gear",
+  crafting_materials = "Craft",
+  raid_materials = "Raid",
+  consumables = "Cons",
+  miscellaneous = "Misc",
+}
+
+LeafVE.guildBankManualCategoryDisplayLabels = {
+  [""] = "Auto",
+  gear_boes = "Gear",
+  crafting_materials = "Crafting Materials",
+  raid_materials = "Raid Materials",
+  consumables = "Consumables",
+  miscellaneous = "Miscellaneous",
+}
+
+LeafVE.guildBankProtectionKeywords = {
+  "fire protection",
+  "frost protection",
+  "nature protection",
+  "shadow protection",
+  "arcane protection",
+  "holy protection",
+}
+
+LeafVE.guildBankEnchantingEssenceKeywords = {
+  "magic essence",
+  "astral essence",
+  "mystic essence",
+  "nether essence",
+  "eternal essence",
+}
+
+LeafVE.guildBankFoodKeywords = {
+  "soup",
+  "stew",
+  "dumpling",
+  "squid",
+  "sausage",
+  "steak",
+  "delight",
+  "chowder",
+  "surprise",
+  "tea",
+  "rumsey",
+  "cake",
+  "roast",
+  "fillet",
+  "chili",
+}
+
+LeafVE.guildBankBuffConsumableKeywords = {
+  "scroll",
+  "oil",
+  "juju",
+  "firewater",
+  "sharpening stone",
+  "weightstone",
+}
+
+LeafVE.guildBankElementalKeywords = {
+  "elemental ",
+  "heart of fire",
+  "globe of water",
+  "core of earth",
+  "breath of wind",
+}
+
+LeafVE.guildBankAlchemyReagentKeywords = {
+  "vial",
+  "phial",
+  "wildvine",
+  "ichor",
+  "venom sac",
+}
+
+LeafVE.guildBankHerbNameKeywords = {
+  "lotus",
+  "foil",
+  "leaf",
+  "bloom",
+  "root",
+  "weed",
+  "sage",
+  "moss",
+  "thorn",
+}
+
+LeafVE.guildBankBarOreKeywords = {
+  " bar",
+  " ore",
+  "ingot",
+}
+
+LeafVE.guildBankStoneKeywords = {
+  "stone",
+  "solid ",
+  "dense ",
+  "heavy ",
+  "rough ",
+  "coarse ",
+}
+
+LeafVE.guildBankRecipeKeywords = {
+  "formula:",
+  "manual:",
+  "pattern:",
+  "plans:",
+  "recipe:",
+  "schematic:",
+}
+
+LeafVE.guildBankResistanceKeywords = {
+  "resist",
+  "resistance",
+  "fireguard",
+  "fireproof",
+  "icebane",
+  "frostguard",
+  "sandstalker",
+  "onyxia scale",
+}
+
+LeafVE.guildBankContainerKeywords = {
+  "bag",
+  "satchel",
+  "pouch",
+  "lockbox",
+  "cache",
+  "crate",
+  "quiver",
+  "ammo pouch",
+}
+
+LeafVE.guildBankUtilityKeywords = {
+  "key",
+  "rune of",
+  "symbol of",
+  "candle",
+  "ankh",
+  "flash powder",
+  "vanishing powder",
+  "soul shard",
+}
+
+LeafVE.guildBankGemKeywords = {
+  "diamond",
+  "ruby",
+  "opal",
+  "sapphire",
+  "aquamarine",
+  "emerald",
+  "jade",
+  "citrine",
+  "amber",
+  "pearl",
+  "moonstone",
+  "agate",
+  "bloodstone",
+  "malachite",
+  "topaz",
+}
+
+LeafVE.guildBankEngineeringKeywords = {
+  "blasting powder",
+  "fused wiring",
+  "gyro",
+  "framework",
+  "bronze tube",
+  "mithril casing",
+  "thorium widget",
+  "bomb",
+  "dynamite",
+  "grenade",
+  "scope",
+}
+
+LeafVE.guildBankProjectileKeywords = {
+  "arrow",
+  "bullet",
+  "shot",
+  "shell",
+}
+
+LeafVE.guildBankMiscBookKeywords = {
+  "codex:",
+  "tome:",
+  "grimoire:",
+  "book:",
+  "treatise:",
+}
+
+LeafVE.guildBankCardKeywords = {
+  "ace of ",
+  "two of ",
+  "three of ",
+  "four of ",
+  "five of ",
+  "six of ",
+  "seven of ",
+  "eight of ",
+}
+
+function LeafVE:GuildBankNameContainsAny(lowerName, keywords)
+  if not lowerName or lowerName == "" then
+    return false
+  end
+  for _, keyword in ipairs(keywords or {}) do
+    if string.find(lowerName, keyword, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+function LeafVE:GuildBankSubtypeContainsAny(lowerSubtype, keywords)
+  if not lowerSubtype or lowerSubtype == "" then
+    return false
+  end
+  for _, keyword in ipairs(keywords or {}) do
+    if string.find(lowerSubtype, keyword, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
+function LeafVE:GetGuildBankItemInfoRecord(itemId, fallbackName)
+  itemId = tonumber(itemId)
+  local fallbackText = Trim(tostring(fallbackName or ""))
+  if not itemId or itemId < 1 then
+    return {
+      itemId = 0,
+      name = fallbackText,
+      lowerName = Lower(fallbackText),
+      quality = 0,
+      itemType = "",
+      itemSubType = "",
+      equipLoc = "",
+      itemTypeRaw = "",
+      itemSubTypeRaw = "",
+      equipLocRaw = "",
+    }
+  end
+
+  self.guildBankItemInfoCache = self.guildBankItemInfoCache or {}
+  local cached = self.guildBankItemInfoCache[itemId]
+  local itemName, _, quality, _, _, itemType, itemSubType, _, equipLoc = GetItemInfo(itemId)
+  local resolved = itemName ~= nil or itemType ~= nil or itemSubType ~= nil or equipLoc ~= nil
+  if not resolved and cached then
+    return cached
+  end
+
+  local name = Trim(tostring(itemName or fallbackText or (cached and cached.name) or ("Item #" .. tostring(itemId))))
+  local record = {
+    itemId = itemId,
+    name = name,
+    lowerName = Lower(name),
+    quality = tonumber(quality) or (cached and cached.quality) or 0,
+    itemType = Lower(Trim(tostring(itemType or (cached and cached.itemTypeRaw) or ""))),
+    itemSubType = Lower(Trim(tostring(itemSubType or (cached and cached.itemSubTypeRaw) or ""))),
+    equipLoc = Lower(Trim(tostring(equipLoc or (cached and cached.equipLocRaw) or ""))),
+    itemTypeRaw = Trim(tostring(itemType or (cached and cached.itemTypeRaw) or "")),
+    itemSubTypeRaw = Trim(tostring(itemSubType or (cached and cached.itemSubTypeRaw) or "")),
+    equipLocRaw = Trim(tostring(equipLoc or (cached and cached.equipLocRaw) or "")),
+  }
+  self.guildBankItemInfoCache[itemId] = record
+  return record
+end
+
+function LeafVE:IsGuildBankEquippableItemInfo(itemInfo)
+  if type(itemInfo) ~= "table" then
+    return false
+  end
+  return itemInfo.equipLoc ~= "" or itemInfo.itemType == "armor" or itemInfo.itemType == "weapon"
+end
+
+function LeafVE:IsGuildBankContainerItemInfo(itemInfo, lowerName)
+  if type(itemInfo) ~= "table" then
+    return false
+  end
+  if itemInfo.itemType == "container" or itemInfo.itemType == "quiver" then
+    return true
+  end
+  return self:GuildBankNameContainsAny(lowerName or itemInfo.lowerName, self.guildBankContainerKeywords)
+end
+
+function LeafVE:GetGuildBankPanelTabInfo(tabKey)
+  local tabs = self.guildBankPanelTabs or {}
+  local wanted = tostring(tabKey or "")
+  for i = 1, table.getn(tabs) do
+    local tabInfo = tabs[i]
+    if tabInfo.key == wanted then
+      return tabInfo
+    end
+  end
+  return tabs[1]
+end
+
+function LeafVE:GetGuildBankPanelSectionInfo(tabKey, sectionKey)
+  local tabInfo = self:GetGuildBankPanelTabInfo(tabKey)
+  local wanted = tostring(sectionKey or "")
+  if not tabInfo then
+    return nil
+  end
+  for i = 1, table.getn(tabInfo.sections or {}) do
+    local sectionInfo = tabInfo.sections[i]
+    if sectionInfo.key == wanted then
+      return sectionInfo
+    end
+  end
+  return tabInfo.sections and tabInfo.sections[1] or nil
+end
+
+function LeafVE:IsGuildBankManualCategoryTab(tabKey)
+  local wanted = tostring(tabKey or "")
+  for _, candidate in ipairs(self.guildBankManualCategoryTabs or {}) do
+    if candidate == wanted then
+      return true
+    end
+  end
+  return false
+end
+
+function LeafVE:GetGuildBankManualCategoryButtonLabel(tabKey)
+  local normalized = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
+  return (self.guildBankManualCategoryButtonLabels or {})[normalized] or "Auto"
+end
+
+function LeafVE:GetGuildBankManualCategoryDisplayLabel(tabKey)
+  local normalized = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
+  return (self.guildBankManualCategoryDisplayLabels or {})[normalized] or "Auto"
+end
+
+function LeafVE:GetGuildBankManualCategoryButtonText(tabKey)
+  return "Sort v"
+end
+
+function LeafVE:GetGuildBankManualCategoryMenuEntries()
+  return {
+    { tabKey = "", label = "Auto" },
+    { tabKey = "gear_boes", label = "Gear" },
+    { tabKey = "crafting_materials", label = "Crafting Mats" },
+    { tabKey = "raid_materials", label = "Raid Mats" },
+    { tabKey = "consumables", label = "Consumables" },
+    { tabKey = "miscellaneous", label = "Misc" },
+  }
+end
+
+function LeafVE:GetGuildBankCategoryMenuFrame()
+  if self.guildBankCategoryMenu then
+    return self.guildBankCategoryMenu
+  end
+
+  local menu = CreateFrame("Frame", "LeafVE_GuildBankCategoryMenu", UIParent)
+  menu:SetWidth(142)
+  menu:SetFrameStrata("FULLSCREEN_DIALOG")
+  if menu.SetToplevel then menu:SetToplevel(true) end
+  if menu.SetClampedToScreen then menu:SetClampedToScreen(true) end
+  menu:EnableMouse(true)
+  menu:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 12,
+    insets = {left = 3, right = 3, top = 3, bottom = 3}
+  })
+  menu:SetBackdropColor(0.05, 0.05, 0.07, 0.96)
+  menu:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.8)
+  menu.buttons = {}
+
+  local entries = self:GetGuildBankManualCategoryMenuEntries()
+  for i = 1, table.getn(entries) do
+    local entry = entries[i]
+    local btn = CreateFrame("Button", nil, menu, "UIPanelButtonTemplate")
+    btn:SetWidth(126)
+    btn:SetHeight(18)
+    btn:SetPoint("TOPLEFT", menu, "TOPLEFT", 8, -((i - 1) * 20) - 8)
+    btn.tabKey = entry.tabKey
+    btn.baseLabel = entry.label
+    SkinButtonAccent(btn)
+    SetLeafButtonTextColor(btn, THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, 0.96, 0.7)
+    btn:SetScript("OnClick", function()
+      local owner = this:GetParent()
+      local item = owner and owner.itemData
+      if not item then
+        LeafVE:HideGuildBankCategoryMenu()
+        return
+      end
+      local record, err = LeafVE:SetGuildBankItemCategoryOverride(item.itemId, this.tabKey ~= "" and this.tabKey or nil)
+      if not record then
+        if owner.ownerPopup and owner.ownerPopup.summaryText then
+          owner.ownerPopup.summaryText:SetText("|cFFFF6666" .. tostring(err or "Unable to update item category.") .. "|r")
+        end
+        return
+      end
+      LeafVE:HideGuildBankCategoryMenu()
+      if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+        LeafVE.UI:RefreshVisibleGuildBankUI(true)
+      end
+    end)
+    menu.buttons[i] = btn
+  end
+
+  local highValueBtn = CreateFrame("Button", nil, menu, "UIPanelButtonTemplate")
+  highValueBtn:SetWidth(126)
+  highValueBtn:SetHeight(18)
+  highValueBtn:SetPoint("TOPLEFT", menu, "TOPLEFT", 8, -((table.getn(entries)) * 20) - 12)
+  SkinButtonAccent(highValueBtn)
+  SetLeafButtonTextColor(highValueBtn, THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, 0.96, 0.7)
+  highValueBtn:SetScript("OnClick", function()
+    local owner = this:GetParent()
+    local item = owner and owner.itemData
+    if not item then
+      LeafVE:HideGuildBankCategoryMenu()
+      return
+    end
+    local record, err = LeafVE:SetGuildBankItemHighValue(item.itemId, not LeafVE:IsGuildBankItemHighValue(item.itemId))
+    if not record then
+      if owner.ownerPopup and owner.ownerPopup.summaryText then
+        owner.ownerPopup.summaryText:SetText("|cFFFF6666" .. tostring(err or "Unable to update item category.") .. "|r")
+      end
+      return
+    end
+    LeafVE:HideGuildBankCategoryMenu()
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
+    end
+  end)
+  menu.highValueBtn = highValueBtn
+  menu:SetHeight((table.getn(entries) * 20) + 38)
+  menu:Hide()
+  menu:SetScript("OnHide", function()
+    this.itemData = nil
+    this.ownerPopup = nil
+    this.ownerButton = nil
+  end)
+
+  self.guildBankCategoryMenu = menu
+  return menu
+end
+
+function LeafVE:HideGuildBankCategoryMenu()
+  if self.guildBankCategoryMenu and self.guildBankCategoryMenu:IsVisible() then
+    self.guildBankCategoryMenu:Hide()
+  end
+end
+
+function LeafVE:OpenGuildBankCategoryMenu(ownerButton)
+  local item = ownerButton and ownerButton.itemData
+  if not item then return end
+
+  local menu = self:GetGuildBankCategoryMenuFrame()
+  if menu:IsVisible() and menu.ownerButton == ownerButton then
+    menu:Hide()
+    return
+  end
+
+  local popup = ownerButton.popup
+  local anchor = ownerButton.manageBtn or ownerButton
+  if menu.SetParent then
+    menu:SetParent(UIParent)
+  end
+  if menu.SetFrameStrata then
+    menu:SetFrameStrata("FULLSCREEN_DIALOG")
+  end
+  local baseLevel = 30
+  if anchor and anchor.GetFrameLevel then
+    baseLevel = anchor:GetFrameLevel() + 20
+  end
+  if popup and popup.GetFrameLevel then
+    local popupLevel = popup:GetFrameLevel() + 20
+    if popupLevel > baseLevel then
+      baseLevel = popupLevel
+    end
+  end
+  if menu.SetFrameLevel then
+    menu:SetFrameLevel(baseLevel)
+  end
+  menu:ClearAllPoints()
+
+  local anchorBottom = anchor.GetBottom and anchor:GetBottom()
+  local uiBottom = UIParent and UIParent.GetBottom and UIParent:GetBottom()
+  local menuHeight = menu:GetHeight() or 0
+  if anchorBottom and uiBottom and (anchorBottom - menuHeight) < (uiBottom + 8) then
+    menu:SetPoint("BOTTOMRIGHT", anchor, "TOPRIGHT", 0, 2)
+  else
+    menu:SetPoint("TOPRIGHT", anchor, "BOTTOMRIGHT", 0, -2)
+  end
+
+  menu.itemData = item
+  menu.ownerPopup = popup
+  menu.ownerButton = ownerButton
+
+  local currentTab = self:GetGuildBankItemCategoryOverrideTab(item.itemId) or ""
+  for i = 1, table.getn(menu.buttons or {}) do
+    local btn = menu.buttons[i]
+    local prefix = (btn.tabKey or "") == currentTab and "* " or ""
+    btn:SetText(prefix .. tostring(btn.baseLabel or "Auto"))
+  end
+  if menu.highValueBtn then
+    menu.highValueBtn:SetText(self:IsGuildBankItemHighValue(item.itemId) and "Make Normal" or "Mark High Value")
+  end
+
+  if menu.buttons then
+    for i = 1, table.getn(menu.buttons) do
+      local btn = menu.buttons[i]
+      if btn and btn.SetFrameLevel then
+        btn:SetFrameLevel((menu.GetFrameLevel and menu:GetFrameLevel() or baseLevel) + 1)
+      end
+    end
+  end
+  if menu.highValueBtn and menu.highValueBtn.SetFrameLevel then
+    menu.highValueBtn:SetFrameLevel((menu.GetFrameLevel and menu:GetFrameLevel() or baseLevel) + 1)
+  end
+
+  menu:Show()
+  if menu.Raise then
+    menu:Raise()
+  end
+end
+
+function LeafVE:GetNextGuildBankManualCategoryTab(tabKey)
+  local normalized = self:IsGuildBankManualCategoryTab(tabKey) and tostring(tabKey) or ""
+  local tabs = self.guildBankManualCategoryTabs or {}
+  if normalized == "" then
+    return tabs[1]
+  end
+  for i = 1, table.getn(tabs) do
+    if tabs[i] == normalized then
+      return tabs[i + 1]
+    end
+  end
+  return nil
+end
+
+function LeafVE:GetGuildBankItemCategoryLine(item, sectionInfo)
+  local tabKey = item and item.guildBankTabKey
+  if not tabKey and item then
+    tabKey = select(1, self:ClassifyGuildBankDisplayItem(item))
+  end
+  local tabInfo = self:GetGuildBankPanelTabInfo(tabKey)
+  local label = tostring(tabInfo and tabInfo.label or "Guild Bank")
+
+  local manualTab = item and self:GetGuildBankItemCategoryOverrideTab(item.itemId)
+  if manualTab then
+    label = "Manual: " .. tostring(self:GetGuildBankManualCategoryDisplayLabel(manualTab))
+  end
+
+  local accessText
+  if item and item.isHighValue then
+    accessText = "|cFFFFD700High Value|r - Jonin, Anbu, Sannin, Hokage"
+  else
+    accessText = "|cFF88FF88Normal|r - Any guild member can request"
+  end
+  return label .. "  |  " .. accessText
+end
+
+function LeafVE:ClassifyGuildBankDisplayItem(item)
+  if type(item) ~= "table" then
+    return "miscellaneous", "misc_items"
+  end
+
+  local itemId = tonumber(item.itemId)
+  local manualTabKey = self:GetGuildBankItemCategoryOverrideTab(itemId)
+  if manualTabKey then
+    return manualTabKey, "manual_assigned"
+  end
+
+  local itemInfo = item.itemInfo
+  if type(itemInfo) ~= "table" or tonumber(itemInfo.itemId or 0) ~= (itemId or 0) then
+    itemInfo = self:GetGuildBankItemInfoRecord(itemId, item.name)
+    item.itemInfo = itemInfo
+  end
+
+  local lowerName = itemInfo.lowerName or Lower(tostring(item.name or ""))
+  local itemType = item.itemType or itemInfo.itemType or ""
+  local itemSubType = item.itemSubType or itemInfo.itemSubType or ""
+  local quality = tonumber(item.quality or itemInfo.quality or 0) or 0
+
+  if itemType == "recipe" or self:GuildBankNameContainsAny(lowerName, self.guildBankRecipeKeywords) then
+    return "crafting_materials", "recipes"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankMiscBookKeywords)
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankCardKeywords) then
+    return "miscellaneous", "misc_items"
+  end
+
+  if string.find(lowerName, "flask", 1, true) then
+    return "consumables", "flasks"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankProtectionKeywords) then
+    return "consumables", "protection_potions"
+  end
+  if string.find(lowerName, "bandage", 1, true) then
+    return "consumables", "bandages"
+  end
+  if string.find(lowerName, "elixir", 1, true) then
+    return "consumables", "elixirs"
+  end
+  if string.find(lowerName, "potion", 1, true) then
+    return "consumables", "potions"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankBuffConsumableKeywords) then
+    return "consumables", "elixirs"
+  end
+  if string.find(itemSubType, "food", 1, true) or string.find(itemSubType, "drink", 1, true)
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankFoodKeywords) then
+    return "consumables", "food_buffs"
+  end
+  if itemType == "consumable" then
+    return "consumables", "potions"
+  end
+
+  if self:IsGuildBankContainerItemInfo(itemInfo, lowerName) then
+    return "miscellaneous", "containers"
+  end
+  if itemType == "key" or itemType == "projectile" or itemType == "ammo"
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankUtilityKeywords)
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankProjectileKeywords) then
+    return "miscellaneous", "utility_items"
+  end
+
+  if lowerName == "nexus crystal" or string.find(lowerName, "shard", 1, true)
+    or string.find(lowerName, "dust", 1, true)
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankEnchantingEssenceKeywords)
+    or string.find(itemSubType, "enchant", 1, true) then
+    return "crafting_materials", "enchanting_mats"
+  end
+
+  if string.find(itemSubType, "herb", 1, true) or self:GuildBankNameContainsAny(lowerName, self.guildBankHerbNameKeywords) then
+    return "raid_materials", "herbs"
+  end
+  if string.find(lowerName, "essence of ", 1, true) or lowerName == "living essence" then
+    return "raid_materials", "essence_materials"
+  end
+  if string.find(itemSubType, "elemental", 1, true) or self:GuildBankNameContainsAny(lowerName, self.guildBankElementalKeywords) then
+    return "raid_materials", "elemental_materials"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankAlchemyReagentKeywords) then
+    return "raid_materials", "alchemy_reagents"
+  end
+
+  if string.find(itemSubType, "cloth", 1, true) then
+    return "crafting_materials", "cloth"
+  end
+  if string.find(itemSubType, "leather", 1, true) or string.find(lowerName, "hide", 1, true)
+    or string.find(lowerName, "scale", 1, true) then
+    return "crafting_materials", "leather_hides"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankGemKeywords) then
+    return "crafting_materials", "general_mats"
+  end
+  if string.find(itemSubType, "metal", 1, true) or self:GuildBankNameContainsAny(lowerName, self.guildBankBarOreKeywords) then
+    if self:GuildBankNameContainsAny(lowerName, self.guildBankStoneKeywords) then
+      return "crafting_materials", "general_mats"
+    end
+    return "crafting_materials", "bars_ore"
+  end
+  if self:GuildBankSubtypeContainsAny(itemSubType, {"part", "device", "explosive"})
+    or self:GuildBankNameContainsAny(lowerName, self.guildBankEngineeringKeywords) then
+    return "crafting_materials", "general_mats"
+  end
+  if self:GuildBankNameContainsAny(lowerName, self.guildBankStoneKeywords) then
+    return "crafting_materials", "general_mats"
+  end
+  if itemType == "trade goods" then
+    return "crafting_materials", "general_mats"
+  end
+
+  if self:IsGuildBankEquippableItemInfo(itemInfo) then
+    if self:GuildBankNameContainsAny(lowerName, self.guildBankResistanceKeywords) then
+      return "gear_boes", "resistance_gear"
+    end
+    if quality >= 4 then
+      return "gear_boes", "boe_epics"
+    end
+    if quality >= 3 then
+      return "gear_boes", "pre_raid_bis"
+    end
+    return "gear_boes", "usable_upgrades"
+  end
+
+  if itemType == "reagent" then
+    return "miscellaneous", "utility_items"
+  end
+  if itemType == "quest" or itemType == "miscellaneous" then
+    return "miscellaneous", "misc_items"
+  end
+
+  return "miscellaneous", "misc_items"
+end
+
+function LeafVE:BuildGuildBankPanelDisplayRows(panel, snapshot)
+  local items = self:BuildGuildBankDisplayItems(snapshot)
+  local tabs = self.guildBankPanelTabs or {}
+  local activeTabKey = panel.activeCategoryTab or (tabs[1] and tabs[1].key)
+  local filterText = Lower(Trim(panel.searchBox and panel.searchBox:GetText() or ""))
+  local grouped = {}
+  local rows = {}
+  local filteredItemCount = 0
+  local tabInfo = self:GetGuildBankPanelTabInfo(activeTabKey)
+  activeTabKey = tabInfo and tabInfo.key or activeTabKey
+  local allSectionByTab = {
+    gear_boes = "all_gear",
+    crafting_materials = "all_crafting",
+    raid_materials = "all_raid",
+    consumables = "all_consumables",
+    miscellaneous = "all_misc",
+  }
+
+  for _, sectionInfo in ipairs(tabInfo.sections or {}) do
+    grouped[sectionInfo.key] = {}
+  end
+
+  for i = 1, table.getn(items) do
+    local item = items[i]
+    local tabKey, sectionKey = self:ClassifyGuildBankDisplayItem(item)
+    local targetTabKey = tabKey
+    local targetSectionKey = sectionKey
+    if activeTabKey == "all_items" then
+      targetTabKey = "all_items"
+      targetSectionKey = allSectionByTab[tabKey] or "all_crafting"
+    end
+    item.guildBankTabKey = tabKey
+    item.guildBankSectionKey = sectionKey
+    if targetTabKey == activeTabKey and (filterText == "" or string.find(item.searchKey or "", filterText, 1, true)) then
+      if not grouped[targetSectionKey] then
+        grouped[targetSectionKey] = {}
+      end
+      table.insert(grouped[targetSectionKey], item)
+      filteredItemCount = filteredItemCount + 1
+    end
+  end
+
+  for _, sectionInfo in ipairs(tabInfo.sections or {}) do
+    local sectionItems = grouped[sectionInfo.key] or {}
+    if table.getn(sectionItems) > 0 then
+      for i = 1, table.getn(sectionItems) do
+        table.insert(rows, {
+          rowType = "item",
+          section = sectionInfo,
+          item = sectionItems[i],
+        })
+      end
+    end
+  end
+
+  return rows, filteredItemCount, filterText, tabInfo
+end
+
+function LeafVE.UI:CreateGuildBankPanelInventoryRow(parent)
+  local row = CreateFrame("Frame", nil, parent)
+  row:SetWidth(240)
+  row:SetHeight(72)
+  row.popup = parent and parent.popup
+
+  local header = CreateFrame("Frame", nil, row)
+  header:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+  header:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+  header:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = false, tileSize = 8, edgeSize = 10,
+    insets = {left = 2, right = 2, top = 2, bottom = 2}
+  })
+  header:SetBackdropColor(0.10, 0.11, 0.14, 0.95)
+  header:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.75)
+  header:Hide()
+  row.headerFrame = header
+
+  local headerText = header:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  headerText:SetPoint("LEFT", header, "LEFT", 12, 0)
+  headerText:SetJustifyH("LEFT")
+  headerText:SetTextColor(THEME.gold[1], THEME.gold[2], THEME.gold[3])
+  row.headerText = headerText
+
+  local headerCountText = header:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  headerCountText:SetPoint("RIGHT", header, "RIGHT", -12, 0)
+  headerCountText:SetJustifyH("RIGHT")
+  headerCountText:SetTextColor(0.75, 0.85, 1.0)
+  row.headerCountText = headerCountText
+
+  local itemButton = CreateGuildBankItemButton(row)
+  itemButton:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+  itemButton:Hide()
+  row.itemButton = itemButton
+
+  return row
+end
+
+function LeafVE.UI:BuildGuildBankPanel(panel)
+  if not panel or panel.built then return end
+
+  panel.isMainGuildBankPanel = true
+  panel.activeCategoryTab = panel.activeCategoryTab or ((LeafVE.guildBankPanelTabs or {})[1] and (LeafVE.guildBankPanelTabs or {})[1].key) or "all_items"
+  panel.requestQuantities = {}
+  panel.inventoryRows = {}
+  panel.requestButtons = {}
+  panel.inventoryOffset = 0
+  panel.requestOffset = 0
+  panel.inventoryRowHeight = 72
+  panel.inventoryMinVisibleRows = 6
+  panel.requestRowHeight = 62
+
+  local inventoryPane = CreateInset(panel)
+  inventoryPane:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8)
+  inventoryPane:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -316, 8)
+  inventoryPane.popup = panel
+  panel.inventoryPane = inventoryPane
+
+  local sidebarPane = CreateInset(panel)
+  sidebarPane:SetPoint("TOPLEFT", inventoryPane, "TOPRIGHT", 8, 0)
+  sidebarPane:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -8, 8)
+  sidebarPane.popup = panel
+  panel.sidebarPane = sidebarPane
+
+  local titleText = inventoryPane:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  titleText:SetPoint("TOPLEFT", inventoryPane, "TOPLEFT", 12, -12)
+  titleText:SetTextColor(THEME.gold[1], THEME.gold[2], THEME.gold[3])
+  titleText:SetText("Guild Bank")
+  panel.titleText = titleText
+
+  local summaryText = inventoryPane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  summaryText:SetPoint("TOPLEFT", titleText, "BOTTOMLEFT", 0, -4)
+  summaryText:SetWidth(620)
+  summaryText:SetJustifyH("LEFT")
+  summaryText:SetTextColor(0.75, 0.85, 1.0)
+  panel.summaryText = summaryText
+
+  local sourceText = inventoryPane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  sourceText:SetPoint("TOPLEFT", summaryText, "BOTTOMLEFT", 0, -2)
+  sourceText:SetWidth(620)
+  sourceText:SetJustifyH("LEFT")
+  panel.sourceText = sourceText
+
+  panel.categoryButtons = {}
+  local previousCategoryBtn
+  local firstCategoryBtn
+  for i = 1, table.getn(LeafVE.guildBankPanelTabs or {}) do
+    local tabInfo = (LeafVE.guildBankPanelTabs or {})[i]
+    local btn = CreateWorkOrderModeButton(inventoryPane, tabInfo.label)
+    btn:SetWidth(tabInfo.buttonWidth or 118)
+    if i == 1 then
+      btn:SetPoint("TOPLEFT", sourceText, "BOTTOMLEFT", 0, -10)
+      firstCategoryBtn = btn
+    else
+      btn:SetPoint("LEFT", previousCategoryBtn, "RIGHT", 6, 0)
+    end
+    btn.panel = panel
+    btn.tabKey = tabInfo.key
+    btn:SetScript("OnClick", function()
+      local owner = this.panel
+      owner.activeCategoryTab = this.tabKey
+      owner.inventoryOffset = 0
+      if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+        LeafVE.UI:RefreshGuildBankPanel(true)
+      end
+    end)
+    panel.categoryButtons[tabInfo.key] = btn
+    previousCategoryBtn = btn
+  end
+
+  local searchBG = CreateFrame("Frame", nil, inventoryPane)
+  searchBG:SetPoint("TOPRIGHT", inventoryPane, "TOPRIGHT", -18, -10)
+  searchBG:SetWidth(196)
+  searchBG:SetHeight(22)
+  searchBG:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 12,
+    insets = {left = 3, right = 3, top = 3, bottom = 3}
+  })
+  searchBG:SetBackdropColor(0.06, 0.06, 0.08, 0.92)
+  searchBG:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+  panel.searchBG = searchBG
+
+  local searchLabel = inventoryPane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  searchLabel:SetPoint("RIGHT", searchBG, "LEFT", -8, 0)
+  searchLabel:SetText("|cFFFFD700Search|r")
+  panel.searchLabel = searchLabel
+
+  local searchBox = CreateFrame("EditBox", nil, searchBG)
+  searchBox:SetPoint("TOPLEFT", searchBG, "TOPLEFT", 6, -3)
+  searchBox:SetPoint("BOTTOMRIGHT", searchBG, "BOTTOMRIGHT", -6, 3)
+  searchBox:SetFontObject(GameFontHighlightSmall)
+  searchBox:SetJustifyH("LEFT")
+  searchBox:SetAutoFocus(false)
+  searchBox:SetText("")
+  searchBox:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+  searchBox:SetScript("OnTextChanged", function()
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel(true)
+    end
+  end)
+  panel.searchBox = searchBox
+
+  local hintText = inventoryPane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  hintText:SetPoint("TOPLEFT", searchBG, "BOTTOMLEFT", 0, -2)
+  hintText:SetPoint("RIGHT", inventoryPane, "RIGHT", -18, 0)
+  hintText:SetJustifyH("LEFT")
+  hintText:SetJustifyV("TOP")
+  hintText:SetText("")
+  hintText:Hide()
+  panel.hintText = hintText
+
+  local listFrame = CreateFrame("Frame", nil, inventoryPane)
+  listFrame:SetPoint("TOPLEFT", firstCategoryBtn, "BOTTOMLEFT", 0, -6)
+  listFrame:SetPoint("BOTTOMRIGHT", inventoryPane, "BOTTOMRIGHT", -30, 8)
+  listFrame:EnableMouse(false)
+  listFrame:EnableMouseWheel(true)
+  listFrame.popup = panel
+  listFrame:SetScript("OnMouseWheel", function()
+    local owner = this.popup
+    local totalRows = table.getn(owner.displayRows or {})
+    local visibleRows = owner.inventoryVisibleRows or 1
+    local maxOffset = math.max(0, totalRows - visibleRows)
+    local newOffset = (owner.inventoryOffset or 0) - (arg1 or 0)
+    if newOffset < 0 then newOffset = 0 end
+    if newOffset > maxOffset then newOffset = maxOffset end
+    if newOffset == (owner.inventoryOffset or 0) then return end
+    owner.inventoryOffset = newOffset
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel(true)
+    end
+  end)
+  panel.listFrame = listFrame
+
+  local scrollBar = CreateFrame("Slider", nil, inventoryPane)
+  scrollBar:SetPoint("TOPRIGHT", listFrame, "TOPRIGHT", 22, 0)
+  scrollBar:SetPoint("BOTTOMRIGHT", inventoryPane, "BOTTOMRIGHT", -8, 12)
+  scrollBar:SetWidth(16)
+  scrollBar:SetOrientation("VERTICAL")
+  scrollBar:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+  scrollBar:SetMinMaxValues(0, 0)
+  scrollBar:SetValue(0)
+  scrollBar:SetValueStep(1)
+  scrollBar.popup = panel
+  local thumb = scrollBar:GetThumbTexture()
+  thumb:SetWidth(16)
+  thumb:SetHeight(24)
+  scrollBar:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = {left = 2, right = 2, top = 2, bottom = 2}
+  })
+  scrollBar:SetBackdropColor(0, 0, 0, 0.3)
+  scrollBar:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.8)
+  scrollBar:SetScript("OnValueChanged", function()
+    if this.ignoreUpdate then return end
+    local owner = this.popup
+    local value = math.floor((this:GetValue() or 0) + 0.5)
+    if value < 0 then value = 0 end
+    if value == (owner.inventoryOffset or 0) then return end
+    owner.inventoryOffset = value
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel(true)
+    end
+  end)
+  panel.scrollBar = scrollBar
+
+  local noItemsText = listFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  noItemsText:SetPoint("TOPLEFT", listFrame, "TOPLEFT", 8, -8)
+  noItemsText:SetWidth(560)
+  noItemsText:SetJustifyH("LEFT")
+  noItemsText:SetJustifyV("TOP")
+  noItemsText:SetText("|cFF888888No guild bank snapshot cached yet.|r")
+  panel.noItemsText = noItemsText
+
+  local sidebarTitle = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+  sidebarTitle:SetPoint("TOPLEFT", sidebarPane, "TOPLEFT", 12, -12)
+  sidebarTitle:SetTextColor(THEME.gold[1], THEME.gold[2], THEME.gold[3])
+  sidebarTitle:SetText("Operations")
+  panel.sidebarTitle = sidebarTitle
+
+  local refreshBtn = CreateFrame("Button", nil, sidebarPane, "UIPanelButtonTemplate")
+  refreshBtn:SetWidth(84)
+  refreshBtn:SetHeight(22)
+  refreshBtn:SetPoint("TOPRIGHT", sidebarPane, "TOPRIGHT", -12, -10)
+  refreshBtn:SetText("Refresh")
+  SkinButtonAccent(refreshBtn)
+  refreshBtn:SetScript("OnClick", function()
+    LeafVE:RequestGuildBankOwner(true)
+    LeafVE:RequestGuildBankSnapshot(true)
+    LeafVE:RequestGuildBankItemRequestSync(true)
+    LeafVE:RequestGuildBankCategoryOverrideSync(true)
+    LeafVE:RequestGuildBankHighValueSync(true)
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
+    end
+  end)
+  panel.refreshBtn = refreshBtn
+
+  local goldLabel = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  goldLabel:SetPoint("TOPLEFT", sidebarTitle, "BOTTOMLEFT", 0, -10)
+  goldLabel:SetText("|cFFFFD700Tracked Gold|r")
+  panel.goldLabel = goldLabel
+
+  local goldDisplay = CreateFrame("Frame", "LeafVE_GuildBankPanelMoneyFrame", sidebarPane, "SmallMoneyFrameTemplate")
+  goldDisplay:SetPoint("TOPLEFT", goldLabel, "BOTTOMLEFT", -8, -4)
+  goldDisplay:SetWidth(120)
+  goldDisplay:SetHeight(16)
+  goldDisplay:Hide()
+  goldDisplay.small = 1
+  goldDisplay.staticMoney = 0
+  do
+    local prevThis = this
+    this = goldDisplay
+    if SmallMoneyFrame_OnLoad then
+      SmallMoneyFrame_OnLoad()
+    end
+    if MoneyFrame_SetType then
+      MoneyFrame_SetType("STATIC")
+    end
+    this = prevThis
+  end
+  panel.goldDisplay = goldDisplay
+
+  local ownerLabel = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  ownerLabel:SetPoint("TOPLEFT", goldDisplay, "BOTTOMLEFT", 8, -14)
+  ownerLabel:SetText("|cFFFFD700Designated Bank Alt|r")
+  panel.ownerLabel = ownerLabel
+
+  local ownerBG = CreateFrame("Frame", nil, sidebarPane)
+  ownerBG:SetPoint("TOPLEFT", ownerLabel, "BOTTOMLEFT", 0, -5)
+  ownerBG:SetWidth(170)
+  ownerBG:SetHeight(22)
+  ownerBG:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 16, edgeSize = 12,
+    insets = {left = 3, right = 3, top = 3, bottom = 3}
+  })
+  ownerBG:SetBackdropColor(0.06, 0.06, 0.08, 0.92)
+  ownerBG:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+  panel.ownerBG = ownerBG
+
+  local ownerInput = CreateFrame("EditBox", nil, ownerBG)
+  ownerInput:SetPoint("TOPLEFT", ownerBG, "TOPLEFT", 6, -3)
+  ownerInput:SetPoint("BOTTOMRIGHT", ownerBG, "BOTTOMRIGHT", -6, 3)
+  ownerInput:SetFontObject(GameFontHighlightSmall)
+  ownerInput:SetJustifyH("LEFT")
+  ownerInput:SetAutoFocus(false)
+  ownerInput:SetText(LeafVE:GetGuildBankOwnerName())
+  ownerInput:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+  panel.ownerInput = ownerInput
+
+  local saveOwnerBtn = CreateFrame("Button", nil, sidebarPane, "UIPanelButtonTemplate")
+  saveOwnerBtn:SetWidth(68)
+  saveOwnerBtn:SetHeight(22)
+  saveOwnerBtn:SetPoint("LEFT", ownerBG, "RIGHT", 8, 0)
+  saveOwnerBtn:SetText("Save")
+  SkinButtonAccent(saveOwnerBtn)
+  saveOwnerBtn:SetScript("OnClick", function()
+    local config, err = LeafVE:SetGuildBankOwner(ownerInput:GetText() or "")
+    if not config then
+      panel.ownerStatusText:SetText("|cFFFF6666" .. tostring(err or "Unable to update guild bank owner.") .. "|r")
+      return
+    end
+    panel.ownerStatusText:SetText("|cFF88FF88Guild bank alt set to " .. tostring(config.owner or LeafVE:GetGuildBankOwnerName()) .. ".|r")
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
+    end
+  end)
+  panel.saveOwnerBtn = saveOwnerBtn
+
+  ownerInput:SetScript("OnEnterPressed", function()
+    this:ClearFocus()
+    if panel.saveOwnerBtn and panel.saveOwnerBtn:IsVisible() then
+      panel.saveOwnerBtn:Click()
+    end
+  end)
+
+  local ownerStatusText = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  ownerStatusText:SetPoint("TOPLEFT", ownerBG, "BOTTOMLEFT", 0, -4)
+  ownerStatusText:SetWidth(260)
+  ownerStatusText:SetJustifyH("LEFT")
+  ownerStatusText:SetJustifyV("TOP")
+  ownerStatusText:SetText("")
+  panel.ownerStatusText = ownerStatusText
+
+  local requestTitle = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  requestTitle:SetPoint("TOPLEFT", ownerStatusText, "BOTTOMLEFT", 0, -16)
+  requestTitle:SetTextColor(THEME.gold[1], THEME.gold[2], THEME.gold[3])
+  requestTitle:SetText("Open Requests")
+  panel.requestTitle = requestTitle
+
+  local requestSummaryText = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  requestSummaryText:SetPoint("TOPLEFT", requestTitle, "BOTTOMLEFT", 0, -4)
+  requestSummaryText:SetWidth(270)
+  requestSummaryText:SetJustifyH("LEFT")
+  requestSummaryText:SetJustifyV("TOP")
+  panel.requestSummaryText = requestSummaryText
+
+  local requestListFrame = CreateFrame("Frame", nil, sidebarPane)
+  requestListFrame:SetPoint("TOPLEFT", requestSummaryText, "BOTTOMLEFT", 0, -8)
+  requestListFrame:SetPoint("BOTTOMRIGHT", sidebarPane, "BOTTOMRIGHT", -30, 14)
+  requestListFrame:EnableMouse(true)
+  requestListFrame:EnableMouseWheel(true)
+  requestListFrame.popup = panel
+  requestListFrame:SetScript("OnMouseWheel", function()
+    local owner = this.popup
+    local totalRows = table.getn(owner.openRequests or {})
+    local visibleRows = owner.requestVisibleRows or 1
+    local maxOffset = math.max(0, totalRows - visibleRows)
+    local newOffset = (owner.requestOffset or 0) - (arg1 or 0)
+    if newOffset < 0 then newOffset = 0 end
+    if newOffset > maxOffset then newOffset = maxOffset end
+    if newOffset == (owner.requestOffset or 0) then return end
+    owner.requestOffset = newOffset
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel(true)
+    end
+  end)
+  panel.requestListFrame = requestListFrame
+
+  local requestScrollBar = CreateFrame("Slider", nil, sidebarPane)
+  requestScrollBar:SetPoint("TOPRIGHT", requestListFrame, "TOPRIGHT", 22, 0)
+  requestScrollBar:SetPoint("BOTTOMRIGHT", sidebarPane, "BOTTOMRIGHT", -8, 14)
+  requestScrollBar:SetWidth(16)
+  requestScrollBar:SetOrientation("VERTICAL")
+  requestScrollBar:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+  requestScrollBar:SetMinMaxValues(0, 0)
+  requestScrollBar:SetValue(0)
+  requestScrollBar:SetValueStep(1)
+  requestScrollBar.popup = panel
+  local requestThumb = requestScrollBar:GetThumbTexture()
+  requestThumb:SetWidth(16)
+  requestThumb:SetHeight(24)
+  requestScrollBar:SetBackdrop({
+    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = true, tileSize = 8, edgeSize = 8,
+    insets = {left = 2, right = 2, top = 2, bottom = 2}
+  })
+  requestScrollBar:SetBackdropColor(0, 0, 0, 0.3)
+  requestScrollBar:SetBackdropBorderColor(0.3, 0.3, 0.3, 0.8)
+  requestScrollBar:SetScript("OnValueChanged", function()
+    if this.ignoreUpdate then return end
+    local owner = this.popup
+    local value = math.floor((this:GetValue() or 0) + 0.5)
+    if value < 0 then value = 0 end
+    if value == (owner.requestOffset or 0) then return end
+    owner.requestOffset = value
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel(true)
+    end
+  end)
+  panel.requestScrollBar = requestScrollBar
+
+  local noRequestsText = requestListFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  noRequestsText:SetPoint("TOPLEFT", requestListFrame, "TOPLEFT", 8, -8)
+  noRequestsText:SetWidth(240)
+  noRequestsText:SetJustifyH("LEFT")
+  noRequestsText:SetJustifyV("TOP")
+  noRequestsText:SetText("|cFF888888There are no open guild bank requests.|r")
+  panel.noRequestsText = noRequestsText
+
+  panel:SetScript("OnShow", function()
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
+      LeafVE.UI:RefreshGuildBankPanel()
+    end
+  end)
+
+  panel.built = true
+end
+
+function LeafVE.UI:RefreshGuildBankPanelRequests(panel)
+  if not panel or not panel.requestListFrame then return end
+
+  local me = ShortName(UnitName("player"))
+  local usedThisWeek = me and LeafVE:GetGuildBankRequestCountThisWeek(me) or 0
+  local remainingThisWeek = 3 - usedThisWeek
+  if remainingThisWeek < 0 then remainingThisWeek = 0 end
+  local resetText = GetWeeklyResetCountdownText()
+  local requests = LeafVE:GetGuildBankActiveRequests()
+  panel.openRequests = requests
+
+  if panel.requestSummaryText then
+    panel.requestSummaryText:SetText(
+      "|cFFAAAAAAOpen this week:|r " .. tostring(table.getn(requests)) ..
+      "  |  |cFFAAAAAAYours left:|r " .. tostring(remainingThisWeek) ..
+      "  |  |cFFAAAAAAReset in:|r " .. tostring(resetText)
+    )
+  end
+
+  local rowHeight = panel.requestRowHeight or 62
+  local visibleRows = GetWorkOrderVisibleRowCount(panel.requestListFrame, rowHeight, 5)
+  local rowCount = table.getn(requests)
+  local maxOffset = math.max(0, rowCount - visibleRows)
+  if (panel.requestOffset or 0) > maxOffset then
+    panel.requestOffset = maxOffset
+  end
+  panel.requestVisibleRows = visibleRows
+
+  while table.getn(panel.requestButtons) < visibleRows do
+    local btn = CreateGuildBankRequestButton(panel.requestListFrame)
+    btn.popup = panel
+    panel.requestButtons[table.getn(panel.requestButtons) + 1] = btn
+  end
+
+  local listWidth = panel.requestListFrame:GetWidth() or 0
+  if not listWidth or listWidth < 220 then
+    listWidth = 248
+  end
+
+  local snapshot = LeafVE:GetGuildBankSnapshot()
+  local canManage = me and (LeafVE:IsGuildBankOwner(me) or LeafVE:IsAdminRank())
+  local startIndex = (panel.requestOffset or 0) + 1
+  for row = 1, table.getn(panel.requestButtons) do
+    local btn = panel.requestButtons[row]
+    local dataIndex = startIndex + row - 1
+    if row <= visibleRows and dataIndex <= rowCount then
+      local request = requests[dataIndex]
+      local bankCount = tonumber(snapshot.counts and snapshot.counts[tostring(request.itemId)] or 0) or 0
+      local reservedCount = LeafVE:GetGuildBankReservedRequestQuantity(request.itemId)
+      if reservedCount > bankCount then
+        reservedCount = bankCount
+      end
+      local availableCount = bankCount - reservedCount
+      if availableCount < 0 then
+        availableCount = 0
+      end
+      local tabKey, sectionKey = LeafVE:ClassifyGuildBankDisplayItem({
+        itemId = request.itemId,
+        name = request.itemName,
+      })
+      local sectionInfo = LeafVE:GetGuildBankPanelSectionInfo(tabKey, sectionKey)
+
+      btn.requestData = request
+      btn.popup = panel
+      btn:SetWidth(listWidth - 4)
+      btn:SetHeight(rowHeight - 4)
+      btn:ClearAllPoints()
+      btn:SetPoint("TOPLEFT", panel.requestListFrame, "TOPLEFT", 2, -((row - 1) * rowHeight) - 2)
+      btn.icon:SetTexture(request.icon or LEAF_FALLBACK)
+      btn.nameText:SetText("|cFFFFD700" .. tostring(request.itemName or ("Item #" .. tostring(request.itemId or 0))) .. "|r")
+      btn.detailText:SetText(
+        tostring(sectionInfo and sectionInfo.label or "Guild Bank") ..
+        "  |  " ..
+        (LeafVE:IsGuildBankItemHighValue(request.itemId) and "|cFFFFD700High Value|r" or "|cFF88FF88Normal|r") ..
+        "  |  Qty " .. tostring(request.quantity or 1) ..
+        "  |  Available " .. tostring(availableCount) .. "/" .. tostring(bankCount)
+      )
+      btn.statusText:SetText("|cFFAAAAAARequester:|r " .. tostring(request.requester or "Unknown") .. "  |  Added " .. FormatGuildBankRequestAge(request.updatedAt or request.createdAt))
+      if me and Lower(request.requester or "") == Lower(me) then
+        btn.actionType = "cancel"
+        btn.actionBtn:SetText("Cancel")
+        btn.actionBtn:Show()
+        btn.actionBtn:Enable()
+      elseif canManage then
+        btn.actionType = "fulfill"
+        btn.actionBtn:SetText("Fill")
+        btn.actionBtn:Show()
+        btn.actionBtn:Enable()
+      else
+        btn.actionType = nil
+        btn.actionBtn:SetText("")
+        btn.actionBtn:Hide()
+      end
+      UpdateGuildBankItemButtonVisual(btn, false)
+      btn:Show()
+    else
+      btn.requestData = nil
+      btn.actionType = nil
+      if btn.actionBtn then
+        btn.actionBtn:SetText("")
+        btn.actionBtn:Hide()
+      end
+      btn:Hide()
+    end
+  end
+
+  SyncWorkOrderSlider(panel.requestScrollBar, panel.requestOffset or 0, maxOffset)
+
+  if rowCount > 0 then
+    panel.noRequestsText:Hide()
+  else
+    panel.noRequestsText:Show()
+    panel.noRequestsText:SetText("|cFF888888There are no open guild bank requests right now.|r")
+  end
+end
+
+function LeafVE.UI:RefreshGuildBankPanel(skipRequest)
+  local panel = self.panels and self.panels.guildBank
+  if LeafVE and LeafVE.HideGuildBankCategoryMenu then
+    LeafVE:HideGuildBankCategoryMenu()
+  end
+  if not panel then return end
+  if not panel.built then
+    self:BuildGuildBankPanel(panel)
+  end
+  if not panel.built then return end
+
+  if not skipRequest then
+    LeafVE:RequestGuildBankOwner()
+    LeafVE:RequestGuildBankSnapshot()
+    LeafVE:RequestGuildBankItemRequestSync()
+    LeafVE:RequestGuildBankCategoryOverrideSync()
+    LeafVE:RequestGuildBankHighValueSync()
+  end
+
+  local config = LeafVE:GetGuildBankConfig()
+  local snapshot = LeafVE:GetGuildBankSnapshot()
+  local ownerName = config.owner or LeafVE:GetGuildBankOwnerName()
+  local updatedAt = tonumber(snapshot.updatedAt) or 0
+  local filterText = Lower(Trim(panel.searchBox and panel.searchBox:GetText() or ""))
+  local displayKey = table.concat({
+    tostring(ownerName or ""),
+    tostring(updatedAt),
+    tostring(filterText),
+    tostring(panel.activeCategoryTab or ""),
+    tostring(LeafVE:GetGuildBankCategoryOverrideSignature()),
+    tostring(LeafVE:GetGuildBankHighValueSignature()),
+    tostring(LeafVE:GetGuildBankRequestSignature()),
+  }, "|")
+
+  local displayRows = panel.displayRows or {}
+  local filteredItemCount = tonumber(panel.filteredItemCount or 0) or 0
+  local tabInfo = LeafVE:GetGuildBankPanelTabInfo(panel.activeCategoryTab)
+  panel.activeCategoryTab = tabInfo and tabInfo.key or panel.activeCategoryTab
+  if panel.lastDisplayKey ~= displayKey or not panel.displayRows then
+    displayRows, filteredItemCount, filterText, tabInfo = LeafVE:BuildGuildBankPanelDisplayRows(panel, snapshot)
+    panel.displayRows = displayRows
+    panel.filteredItemCount = filteredItemCount
+    panel.lastDisplayKey = displayKey
+    panel.inventoryOffset = 0
+  else
+    displayRows = panel.displayRows
+  end
+
+  if panel.summaryText then
+    panel.summaryText:SetText(
+      tostring(tabInfo.label) .. "  |  " ..
+      tostring(filteredItemCount) .. " visible items  |  " ..
+      tostring(snapshot.uniqueItems or 0) .. " unique  |  " ..
+      tostring(snapshot.totalItems or 0) .. " total"
+    )
+  end
+
+  if panel.hintText then
+    panel.hintText:SetText(
+      "|cFFAAAAAAShowing " .. tostring(tabInfo.label) ..
+      ". Sync includes bags plus the personal bank whenever " .. tostring(ownerName) ..
+      " opens the bank. High Value items stay in their natural tab and remain rank-gated.|r"
+    )
+  end
+
+  if updatedAt > 0 then
+    local timeAgo = Now() - updatedAt
+    if timeAgo < 0 then timeAgo = 0 end
+    local timeStr
+    if timeAgo < 60 then
+      timeStr = tostring(timeAgo) .. "s ago"
+    elseif timeAgo < 3600 then
+      timeStr = tostring(math.floor(timeAgo / 60)) .. "m ago"
+    else
+      timeStr = tostring(math.floor(timeAgo / 3600)) .. "h ago"
+    end
+    if panel.goldDisplay then
+      SetGuildBankMoneyDisplay(panel.goldDisplay, snapshot.goldCopper or 0)
+      panel.goldDisplay:Show()
+    end
+    if panel.sourceText then
+      panel.sourceText:SetText(
+        "|cFF88FF88Last sync from " .. tostring(snapshot.owner or ownerName) .. ":|r " .. tostring(timeStr) ..
+        "  |  " .. tostring(snapshot.usedSlots or 0) .. "/" .. tostring(snapshot.totalSlots or 0) .. " slots used"
+      )
+    end
+  else
+    if panel.goldDisplay then
+      panel.goldDisplay:Hide()
+    end
+    if panel.sourceText then
+      panel.sourceText:SetText("|cFF888888No synced inventory yet. " .. tostring(ownerName) .. " needs to log in or refresh while online.|r")
+    end
+  end
+
+  local isAdmin = LeafVE:IsAdminRank()
+  if panel.ownerInput and not (panel.ownerInput.HasFocus and panel.ownerInput:HasFocus()) then
+    panel.ownerInput:SetText(tostring(ownerName or ""))
+  end
+  if panel.ownerBG then
+    if isAdmin then panel.ownerBG:Show() else panel.ownerBG:Hide() end
+  end
+  if panel.ownerInput then
+    if isAdmin then panel.ownerInput:Show() else panel.ownerInput:Hide() end
+  end
+  if panel.saveOwnerBtn then
+    if isAdmin then panel.saveOwnerBtn:Show() else panel.saveOwnerBtn:Hide() end
+  end
+  if panel.ownerStatusText then
+    if isAdmin then
+      panel.ownerStatusText:SetText("|cFF888888Anbu / Sannin / Hokage can switch which guild bank alt is synced.|r")
+    else
+      local statusLine = "|cFF888888Only Anbu / Sannin / Hokage can change the designated guild bank alt.|r"
+      if config.updatedBy and config.updatedBy ~= "" then
+        statusLine = statusLine .. " |cFF88CCFFSet by " .. tostring(config.updatedBy) .. ".|r"
+      end
+      panel.ownerStatusText:SetText(statusLine)
+    end
+  end
+
+  for _, buttonTab in ipairs(LeafVE.guildBankPanelTabs or {}) do
+    UpdateWorkOrderModeButtonVisual(panel.categoryButtons[buttonTab.key], panel.activeCategoryTab == buttonTab.key)
+  end
+
+  local rowHeight = panel.inventoryRowHeight or 70
+  local minVisibleRows = panel.inventoryMinVisibleRows or 6
+  local usableHeight = panel.listFrame and panel.listFrame:GetHeight() or 0
+  if (not usableHeight or usableHeight < (rowHeight * minVisibleRows)) and panel.inventoryPane and panel.inventoryPane.GetHeight then
+    usableHeight = (panel.inventoryPane:GetHeight() or 0) - 124
+  end
+  if not usableHeight or usableHeight < rowHeight then
+    usableHeight = rowHeight * minVisibleRows
+  end
+  local visibleRows = math.floor(usableHeight / rowHeight)
+  if visibleRows < minVisibleRows then
+    visibleRows = minVisibleRows
+  end
+  local rowCount = table.getn(displayRows)
+  local maxOffset = math.max(0, rowCount - visibleRows)
+  if (panel.inventoryOffset or 0) > maxOffset then
+    panel.inventoryOffset = maxOffset
+  end
+  panel.inventoryVisibleRows = visibleRows
+
+  while table.getn(panel.inventoryRows) < visibleRows do
+    panel.inventoryRows[table.getn(panel.inventoryRows) + 1] = self:CreateGuildBankPanelInventoryRow(panel.listFrame)
+  end
+
+  local listWidth = panel.listFrame:GetWidth() or 0
+  if (not listWidth or listWidth < 380) and panel.inventoryPane and panel.inventoryPane.GetWidth then
+    listWidth = (panel.inventoryPane:GetWidth() or 0) - 42
+  end
+  if not listWidth or listWidth < 380 then
+    listWidth = 460
+  end
+
+  local me = ShortName(UnitName("player"))
+  local startIndex = (panel.inventoryOffset or 0) + 1
+  for row = 1, table.getn(panel.inventoryRows) do
+    local slot = panel.inventoryRows[row]
+    local dataIndex = startIndex + row - 1
+    if row <= visibleRows and dataIndex <= rowCount then
+      local rowData = displayRows[dataIndex]
+      slot:SetWidth(listWidth - 4)
+      slot:SetHeight(rowHeight - 4)
+      slot:ClearAllPoints()
+      slot:SetPoint("TOPLEFT", panel.listFrame, "TOPLEFT", 2, -((row - 1) * rowHeight) - 2)
+      slot:Show()
+
+      if rowData.rowType == "header" then
+        if slot.itemButton then slot.itemButton:Hide() end
+        if slot.headerFrame then
+          slot.headerFrame:Show()
+          slot.headerText:SetText(tostring(rowData.section and rowData.section.label or "Section"))
+          slot.headerCountText:SetText(tostring(rowData.count or 0) .. " item(s)")
+        end
+      else
+        local item = rowData.item
+        local sectionInfo = rowData.section or LeafVE:GetGuildBankPanelSectionInfo(item.guildBankTabKey, item.guildBankSectionKey)
+        local btn = slot.itemButton
+        local canRequest = me and LeafVE:CanPlayerRequestGuildBankItem(me, item.itemId)
+        local itemKey = tostring(item.itemId or 0)
+        local existingRequest = me and LeafVE:FindOpenGuildBankRequest(me, item.itemId) or nil
+        local existingQuantity = existingRequest and (tonumber(existingRequest.quantity or 1) or 1) or 0
+        local requestableCount = tonumber(item.availableCount or item.count or 0) or 0
+        if existingQuantity > 0 then
+          requestableCount = requestableCount + existingQuantity
+        end
+        local quantityMax = requestableCount
+        if existingQuantity > quantityMax then
+          quantityMax = existingQuantity
+        end
+        if quantityMax < 1 then
+          quantityMax = 1
+        end
+        local quantity = panel.requestQuantities and panel.requestQuantities[itemKey]
+        if not quantity then
+          quantity = existingQuantity > 0 and existingQuantity or 1
+        end
+        quantity = ClampGuildBankRequestQuantity(quantity, quantityMax)
+        item.requestableCount = requestableCount
+        item.uiQuantityMax = quantityMax
+        panel.requestQuantities = panel.requestQuantities or {}
+        panel.requestQuantities[itemKey] = quantity
+
+        if slot.headerFrame then slot.headerFrame:Hide() end
+        btn.itemData = item
+        btn.popup = panel
+        btn:SetWidth(listWidth - 4)
+        btn:SetHeight(rowHeight - 4)
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", slot, "TOPLEFT", 0, 0)
+        btn.icon:SetTexture(item.icon or LEAF_FALLBACK)
+        btn.nameText:SetText(tostring(item.name or ("Item #" .. tostring(item.itemId or 0))))
+        if btn.categoryText then
+          btn.categoryText:SetText(LeafVE:GetGuildBankItemCategoryLine(item, sectionInfo))
+        end
+        local availableCount = tonumber(item.availableCount or item.count or 0) or 0
+        btn.countText:SetText("x" .. tostring(availableCount))
+        if btn.qtyInput then
+          btn.qtyInput:SetText(tostring(quantity))
+          if btn.qtyInput.EnableKeyboard then
+            btn.qtyInput:EnableKeyboard((canRequest and (requestableCount > 0 or existingRequest)) and true or false)
+          end
+          if btn.qtyInput.SetTextColor then
+            if canRequest and (requestableCount > 0 or existingRequest) then
+              btn.qtyInput:SetTextColor(1, 1, 1)
+            else
+              btn.qtyInput:SetTextColor(0.6, 0.6, 0.6)
+            end
+          end
+        end
+        if btn.qtyBG then
+          if canRequest and (requestableCount > 0 or existingRequest) then
+            btn.qtyBG:SetAlpha(1)
+          else
+            btn.qtyBG:SetAlpha(0.45)
+          end
+        end
+        if btn.requestBtn then
+          if canRequest then
+            if existingRequest then
+              btn.requestBtn:SetText("Update")
+              btn.requestBtn:Enable()
+            elseif requestableCount > 0 then
+              btn.requestBtn:SetText("Request")
+              btn.requestBtn:Enable()
+            else
+              btn.requestBtn:SetText("Reserved")
+              btn.requestBtn:Disable()
+            end
+          else
+            btn.requestBtn:SetText("Jonin+")
+            btn.requestBtn:Disable()
+          end
+          btn.requestBtn:Show()
+        end
+        if btn.manageBtn then
+          if isAdmin then
+            btn.manageBtn:SetText(LeafVE:GetGuildBankManualCategoryButtonText(LeafVE:GetGuildBankItemCategoryOverrideTab(item.itemId)))
+            btn.manageBtn:Show()
+            btn.manageBtn:Enable()
+          else
+            btn.manageBtn:SetText("")
+            btn.manageBtn:Hide()
+          end
+        end
+        UpdateGuildBankItemButtonVisual(btn, false)
+        btn:Show()
+      end
+    else
+      if slot.headerFrame then slot.headerFrame:Hide() end
+      if slot.itemButton then
+        slot.itemButton.itemData = nil
+        slot.itemButton:Hide()
+      end
+      slot:Hide()
+    end
+  end
+
+  SyncWorkOrderSlider(panel.scrollBar, panel.inventoryOffset or 0, maxOffset)
+
+  if filteredItemCount > 0 then
+    panel.noItemsText:Hide()
+  else
+    panel.noItemsText:Show()
+    if filterText ~= "" then
+      panel.noItemsText:SetText("|cFF888888No bank items matched this search in " .. tostring(tabInfo.label) .. ".|r")
+    elseif updatedAt > 0 then
+      panel.noItemsText:SetText("|cFF888888No items from " .. tostring(tabInfo.label) .. " are in the synced bank snapshot right now.|r")
+    else
+      panel.noItemsText:SetText("|cFF888888No guild bank snapshot cached yet. " .. tostring(ownerName) .. " needs to log in or refresh while online.|r")
+    end
+  end
+
+  self:RefreshGuildBankPanelRequests(panel)
 end
 
 function LeafVE.UI:CreateAchievementListPopup()
@@ -19784,11 +22030,10 @@ function LeafVE.UI:Build()
   
   f:SetWidth(w)
   f:SetHeight(h)
-  f:EnableMouse(true)
+  f:EnableMouse(false)
   f:SetMovable(true)
-  f:RegisterForDrag("LeftButton")
-  f:SetScript("OnDragStart", function() f:StartMoving() end)
-  f:SetScript("OnDragStop", function()
+
+  local function StopLeafFrameDrag()
     f:StopMovingOrSizing()
     if LeafVE_DB and LeafVE_DB.ui then
       local point, _, relativePoint, x, y = f:GetPoint()
@@ -19797,7 +22042,17 @@ function LeafVE.UI:Build()
       LeafVE_DB.ui.x = x
       LeafVE_DB.ui.y = y
     end
-  end)
+  end
+
+  local dragHandle = CreateFrame("Frame", nil, f)
+  dragHandle:SetPoint("TOPLEFT", f, "TOPLEFT", 10, -6)
+  dragHandle:SetPoint("TOPRIGHT", f, "TOPRIGHT", -34, -6)
+  dragHandle:SetHeight(34)
+  dragHandle:EnableMouse(true)
+  dragHandle:RegisterForDrag("LeftButton")
+  dragHandle:SetScript("OnDragStart", function() f:StartMoving() end)
+  dragHandle:SetScript("OnDragStop", StopLeafFrameDrag)
+  self.dragHandle = dragHandle
   
   SkinFrameModern(f)
   MakeResizeHandle(f)
@@ -19964,6 +22219,10 @@ function LeafVE.UI:Build()
   self.tabAdmin:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
   self.tabAdmin:SetWidth(50)
 
+  self.tabGuildBank = TabButton(f, "Guild Bank", "LeafVE_TabGuildBank")
+  self.tabGuildBank:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
+  self.tabGuildBank:SetWidth(78)
+
   -- Show admin tab only to Anbu, Sannin, or Hokage
   if LeafVE:IsAdminRank() then
     self.tabAdmin:Show()
@@ -20052,6 +22311,9 @@ function LeafVE.UI:Build()
     self.panels.guildEvents.loadErrorText = guildEventLoadErrorText
   end
 
+  self.panels.guildBank = CreateFrame("Frame", nil, self.inset)
+  self.panels.guildBank:SetAllPoints(self.inset)
+
   self.panels.welcome = CreateFrame("Frame", nil, self.left)
   self.panels.welcome:SetAllPoints(self.left)
   BuildWelcomePanel(self.panels.welcome)
@@ -20128,6 +22390,11 @@ function LeafVE.UI:Build()
     self:Refresh()
   end)
 
+  self.tabGuildBank:SetScript("OnClick", function()
+    self.activeTab = "guildBank"
+    self:Refresh()
+  end)
+
   self.tabWelcome:SetScript("OnClick", function()
     self.activeTab = "welcome"
     self:Refresh()
@@ -20153,6 +22420,7 @@ function LeafVE.UI:Build()
   self.panels.liveHistory:Hide()
   self.panels.raidSignups:Hide()
   self.panels.guildEvents:Hide()
+  self.panels.guildBank:Hide()
   self.panels.welcome:Hide()
   self.panels.join:Hide()
   
@@ -20192,7 +22460,7 @@ function LeafVE.UI:Refresh()
     self.activeTab = "me"
   end
 
-  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabShoutouts, self.tabHistory, self.tabLiveHistory, self.tabRaidSignups, self.tabGuildEvents, self.tabOptions}
+  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabShoutouts, self.tabHistory, self.tabLiveHistory, self.tabRaidSignups, self.tabGuildEvents, self.tabGuildBank, self.tabOptions}
   if hasAccess then
     for _, tab in ipairs(accessTabs) do
       if tab then tab:Show() end
@@ -20224,7 +22492,7 @@ function LeafVE.UI:Refresh()
   end
 
   if self.card then
-    if hasAccess and self.activeTab ~= "raidSignups" and self.activeTab ~= "guildEvents" then
+    if hasAccess and self.activeTab ~= "raidSignups" and self.activeTab ~= "guildEvents" and self.activeTab ~= "guildBank" then
       self.card:Show()
     else
       self.card:Hide()
@@ -20232,7 +22500,7 @@ function LeafVE.UI:Refresh()
   end
   
   -- Hide all panels safely
-  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "liveHistory", "raidSignups", "guildEvents", "welcome", "join"}
+  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "liveHistory", "raidSignups", "guildEvents", "guildBank", "welcome", "join"}
   for _, name in ipairs(panelNames) do
     if self.panels[name] and self.panels[name].Hide then
       self.panels[name]:Hide()
@@ -20553,6 +22821,15 @@ function LeafVE.UI:Refresh()
       self:RefreshGuildEventsPanel()
     end
 
+  elseif self.activeTab == "guildBank" and self.panels.guildBank then
+    if not self.panels.guildBank.built and self.BuildGuildBankPanel then
+      self:BuildGuildBankPanel(self.panels.guildBank)
+    end
+    self.panels.guildBank:Show()
+    if self.RefreshGuildBankPanel then
+      self:RefreshGuildBankPanel()
+    end
+
   elseif self.activeTab == "welcome" and self.panels.welcome then
     self.panels.welcome:Show()
     self:RefreshWelcome()
@@ -20751,12 +23028,15 @@ ef:RegisterEvent("BAG_UPDATE")
 ef:RegisterEvent("PLAYER_MONEY")
 ef:RegisterEvent("CHARACTER_POINTS_CHANGED")
 
-local groupCheckTimer = 0
-local notificationTimer = 0
-local attendanceTimer = 0
-local badgeSyncTimer = 0
-local achLeaderTimer = 0
-local wipeMarkerPollTimer = 0
+local updateTimers = {
+  groupCheck = 0,
+  notification = 0,
+  attendance = 0,
+  badgeSync = 0,
+  achievementLeaderboard = 0,
+  wipeMarkerPoll = 0,
+  bankWatcher = 0,
+}
 
 ef:SetScript("OnEvent", function()
   if event == "ADDON_LOADED" and arg1 == LeafVE.name then
@@ -20857,6 +23137,7 @@ ef:SetScript("OnEvent", function()
            LeafVE:RequestWorkOrderSync(true)
            LeafVE:RequestGuildBankSnapshot(true)
            LeafVE:RequestGuildBankItemRequestSync(true)
+           LeafVE:RequestGuildBankCategoryOverrideSync(true)
           LeafVE:RequestGuildBankHighValueSync(true)
         end
         broadcastFrame:SetScript("OnUpdate", nil)
@@ -20941,8 +23222,8 @@ ef:SetScript("OnEvent", function()
     local me = ShortName(UnitName("player"))
     if me and LeafVE:IsGuildBankOwner(me) then
       LeafVE:BroadcastGuildBankSnapshot(false)
-      if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-        LeafVE.UI:RefreshGuildBankPopup(true)
+      if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+        LeafVE.UI:RefreshVisibleGuildBankUI(true)
       end
     end
     return
@@ -20952,8 +23233,8 @@ ef:SetScript("OnEvent", function()
     local me = ShortName(UnitName("player"))
     if me and LeafVE:IsGuildBankOwner(me) then
       LeafVE:BroadcastGuildBankSnapshot(false)
-      if LeafVE.UI and LeafVE.UI.guildBankPopup and LeafVE.UI.guildBankPopup:IsVisible() then
-        LeafVE.UI:RefreshGuildBankPopup(true)
+      if LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+        LeafVE.UI:RefreshVisibleGuildBankUI(true)
       end
     end
     return
@@ -20975,31 +23256,32 @@ end)
 
 local updateFrame = CreateFrame("Frame")
 updateFrame:SetScript("OnUpdate", function()
-  groupCheckTimer = groupCheckTimer + arg1
-  notificationTimer = notificationTimer + arg1
-  attendanceTimer = attendanceTimer + arg1
-  badgeSyncTimer = badgeSyncTimer + arg1
-  achLeaderTimer = achLeaderTimer + arg1
-  wipeMarkerPollTimer = wipeMarkerPollTimer + arg1
+  updateTimers.groupCheck = updateTimers.groupCheck + arg1
+  updateTimers.notification = updateTimers.notification + arg1
+  updateTimers.attendance = updateTimers.attendance + arg1
+  updateTimers.badgeSync = updateTimers.badgeSync + arg1
+  updateTimers.achievementLeaderboard = updateTimers.achievementLeaderboard + arg1
+  updateTimers.wipeMarkerPoll = updateTimers.wipeMarkerPoll + arg1
+  updateTimers.bankWatcher = updateTimers.bankWatcher + arg1
 
-  if groupCheckTimer >= 30 then
-    groupCheckTimer = 0
+  if updateTimers.groupCheck >= 30 then
+    updateTimers.groupCheck = 0
     LeafVE:OnGroupUpdate()
   end
   
-  if notificationTimer >= 0.1 then
-    notificationTimer = 0
+  if updateTimers.notification >= 0.1 then
+    updateTimers.notification = 0
     LeafVE:ProcessNotifications()
   end
   
-  if attendanceTimer >= 300 then
-    attendanceTimer = 0
+  if updateTimers.attendance >= 300 then
+    updateTimers.attendance = 0
     LeafVE:TrackAttendance()
   end
   
   -- Sync badges every 5 minutes
-  if badgeSyncTimer >= 300 then
-    badgeSyncTimer = 0
+  if updateTimers.badgeSync >= 300 then
+    updateTimers.badgeSync = 0
     if InGuild() then
       LeafVE:BroadcastBadges()
       LeafVE:BroadcastBadgeProgress()
@@ -21010,8 +23292,8 @@ updateFrame:SetScript("OnUpdate", function()
   end
 
   -- Achievement leaderboard auto-refresh every 5 minutes
-  if achLeaderTimer >= 300 then
-    achLeaderTimer = 0
+  if updateTimers.achievementLeaderboard >= 300 then
+    updateTimers.achievementLeaderboard = 0
     -- Request a leaderboard resync from the guild (respects cooldown)
     if InGuild() then
       local now = Now()
@@ -21029,10 +23311,28 @@ updateFrame:SetScript("OnUpdate", function()
 
   -- Periodically poll the guild wipe marker so missed addon packets still
   -- converge to the latest wipe version while players remain online.
-  if wipeMarkerPollTimer >= 60 then
-    wipeMarkerPollTimer = 0
+  if updateTimers.wipeMarkerPoll >= 60 then
+    updateTimers.wipeMarkerPoll = 0
     if InGuild() then
       LeafVE:ApplyGuildWipeMarkerIfNeeded()
+    end
+  end
+
+  if updateTimers.bankWatcher >= 0.25 then
+    updateTimers.bankWatcher = 0
+    local me = ShortName(UnitName("player"))
+    local bankVisible = me and LeafVE:IsGuildBankOwner(me) and LeafVE:IsGuildBankBankFrameVisible() or false
+    local wasVisible = LeafVE.guildBankBankFrameWasVisible and true or false
+
+    if bankVisible ~= wasVisible then
+      LeafVE.guildBankBankFrameWasVisible = bankVisible
+      LeafVE:ApplyGuildBankOwnerBankMode(bankVisible)
+      if bankVisible then
+        LeafVE.lastGuildBankBroadcastAt = 0
+        LeafVE:BroadcastGuildBankSnapshot(true, true)
+      elseif LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+        LeafVE.UI:RefreshVisibleGuildBankUI(true)
+      end
     end
   end
 end)
@@ -24547,3 +26847,8 @@ function LeafVE.UI:RefreshGuildEventsPanel(skipRequest)
     UpdateWorkOrderModeButtonVisual(panel.statusButtons[signupStatus], NormalizeRaidSignupStatus(panel.selectedSignupStatus) == signupStatus)
   end
 end
+
+
+
+
+
