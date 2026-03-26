@@ -1216,29 +1216,60 @@ local function CreateGradientInset(parent)
   return inset
 end
 
+LeafVE.uiMinWidth = 950
+LeafVE.uiMaxWidth = 1400
+LeafVE.uiDefaultWidth = 1050
+LeafVE.uiMinHeight = 760
+LeafVE.uiMaxHeight = 1000
+LeafVE.uiDefaultHeight = 760
+
+function LeafVE:ClampUISize(width, height)
+  local w = tonumber(width) or self.uiDefaultWidth
+  local h = tonumber(height) or self.uiDefaultHeight
+  if w < self.uiMinWidth then w = self.uiMinWidth end
+  if w > self.uiMaxWidth then w = self.uiMaxWidth end
+  if h < self.uiMinHeight then h = self.uiMinHeight end
+  if h > self.uiMaxHeight then h = self.uiMaxHeight end
+  return w, h
+end
+
+function LeafVE:ApplyUISize(width, height)
+  if not LeafVE_DB then LeafVE_DB = {} end
+  if not LeafVE_DB.ui then LeafVE_DB.ui = {} end
+  local w, h = self:ClampUISize(width, height)
+  LeafVE_DB.ui.w = w
+  LeafVE_DB.ui.h = h
+  if self.UI and self.UI.frame then
+    self.UI.frame:SetWidth(w)
+    self.UI.frame:SetHeight(h)
+  end
+  if self.UI and self.UI.RefreshOptions then
+    self.UI:RefreshOptions()
+  end
+  return w, h
+end
+
+function LeafVE:ResetUISize()
+  return self:ApplyUISize(self.uiDefaultWidth, self.uiDefaultHeight)
+end
+
 local function MakeResizeHandle(f)
   if f._resize then return end
   if f.SetResizable then f:SetResizable(true) end
-  if f.SetMinResize then f:SetMinResize(950, 720) end
-  if f.SetMaxResize then f:SetMaxResize(1400, 1000) end
+  if f.SetMinResize then f:SetMinResize(LeafVE.uiMinWidth, LeafVE.uiMinHeight) end
+  if f.SetMaxResize then f:SetMaxResize(LeafVE.uiMaxWidth, LeafVE.uiMaxHeight) end
   if f.SetClampedToScreen then f:SetClampedToScreen(true) end
   local grip = CreateFrame("Button", nil, f)
-  SetSize(grip, 16, 16)
-  grip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -6, 6)
-  local tex = grip:CreateTexture(nil, "ARTWORK")
-  tex:SetAllPoints(grip)
-  tex:SetTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
-  grip:SetNormalTexture(tex)
+  SetSize(grip, 22, 22)
+  grip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -4, 4)
+  grip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+  grip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+  grip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
   grip:SetScript("OnMouseDown", function() if f.StartSizing then f:StartSizing("BOTTOMRIGHT") end end)
-  grip:SetScript("OnMouseUp", function() 
+  grip:SetScript("OnMouseUp", function()
     if f.StopMovingOrSizing then 
       f:StopMovingOrSizing()
-      local w, h = f:GetWidth(), f:GetHeight()
-      if w < 950 then f:SetWidth(950) w = 950 end
-      if w > 1400 then f:SetWidth(1400) w = 1400 end
-      if h < 720 then f:SetHeight(720) h = 720 end
-      if h > 1000 then f:SetHeight(1000) h = 1000 end
-      if LeafVE_DB and LeafVE_DB.ui then LeafVE_DB.ui.w = w LeafVE_DB.ui.h = h end
+      LeafVE:ApplyUISize(f:GetWidth(), f:GetHeight())
     end 
   end)
   f._resize = grip
@@ -1339,8 +1370,9 @@ local function EnsureDB()
       LeafVE_DB.lboard.weeklyVersion[wk] = {}
     end
   end
-  if LeafVE_DB.ui.w == nil then LeafVE_DB.ui.w = 950 end
-  if LeafVE_DB.ui.h == nil then LeafVE_DB.ui.h = 740 end
+  if LeafVE_DB.ui.w == nil then LeafVE_DB.ui.w = LeafVE.uiDefaultWidth end
+  if LeafVE_DB.ui.h == nil then LeafVE_DB.ui.h = LeafVE.uiDefaultHeight end
+  LeafVE_DB.ui.w, LeafVE_DB.ui.h = LeafVE:ClampUISize(LeafVE_DB.ui.w, LeafVE_DB.ui.h)
   if LeafVE_DB.options.officerRankThreshold == nil then LeafVE_DB.options.officerRankThreshold = 4 end
   if LeafVE_DB.options.showOfflineMembers == nil then LeafVE_DB.options.showOfflineMembers = true end
   if LeafVE_DB.options.minimapPos == nil then LeafVE_DB.options.minimapPos = 220 end
@@ -25292,10 +25324,49 @@ function BuildOptionsPanel(panel)
 
   local uiHint = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   uiHint:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, yBase)
-  uiHint:SetText("|cFF888888Use /lve bigger|smaller|wider|narrower or drag the corner grip|r")
+  uiHint:SetText("|cFF888888Drag the bottom-right corner or use these live controls. Changes apply instantly.|r")
   uiHint:SetWidth(430)
   uiHint:SetJustifyH("LEFT")
-  yBase = yBase - 28
+  yBase = yBase - 36
+
+  local _, _, widthSync = MakeNumberStepper(
+    subFrame,
+    "Width",
+    yBase,
+    function() return LeafVE_DB.ui.w or LeafVE.uiDefaultWidth end,
+    function(v)
+      LeafVE:ApplyUISize(v, LeafVE_DB.ui.h or LeafVE.uiDefaultHeight)
+    end,
+    LeafVE.uiMinWidth,
+    LeafVE.uiMaxWidth,
+    25)
+  panel.uiWidthSync = widthSync
+  yBase = yBase - gap
+
+  local _, _, heightSync = MakeNumberStepper(
+    subFrame,
+    "Height",
+    yBase,
+    function() return LeafVE_DB.ui.h or LeafVE.uiDefaultHeight end,
+    function(v)
+      LeafVE:ApplyUISize(LeafVE_DB.ui.w or LeafVE.uiDefaultWidth, v)
+    end,
+    LeafVE.uiMinHeight,
+    LeafVE.uiMaxHeight,
+    25)
+  panel.uiHeightSync = heightSync
+  yBase = yBase - gap
+
+  local resetSizeBtn = CreateFrame("Button", nil, subFrame, "UIPanelButtonTemplate")
+  resetSizeBtn:SetWidth(110)
+  resetSizeBtn:SetHeight(22)
+  resetSizeBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 12, yBase)
+  resetSizeBtn:SetText("Reset Size")
+  SkinButtonAccent(resetSizeBtn)
+  resetSizeBtn:SetScript("OnClick", function()
+    LeafVE:ResetUISize()
+  end)
+  yBase = yBase - 30
 
   -- Divider above Danger Zone
   local divDangerOpt = panel:CreateTexture(nil, "ARTWORK")
@@ -25329,13 +25400,14 @@ end
 
 function LeafVE.UI:RefreshOptions()
   if not self.panels or not self.panels.options then return end
-  -- Options are driven by toggle buttons that read/write DB directly; nothing extra needed.
+  if self.panels.options.uiWidthSync then self.panels.options.uiWidthSync() end
+  if self.panels.options.uiHeightSync then self.panels.options.uiHeightSync() end
 end
 
 -------------------------------------------------
 -- ADMIN TAB PANEL (Anbu / Sannin / Hokage only)
 -------------------------------------------------
-function MakeNumberStepper(parent, label, yPos, getVal, setVal, minVal, maxVal)
+function MakeNumberStepper(parent, label, yPos, getVal, setVal, minVal, maxVal, stepVal)
   local lbl = parent:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   lbl:SetPoint("TOPLEFT", parent, "TOPLEFT", 12, yPos)
   lbl:SetText(label)
@@ -25362,8 +25434,9 @@ function MakeNumberStepper(parent, label, yPos, getVal, setVal, minVal, maxVal)
   btnMinus:SetText("-")
   SkinButtonAccent(btnMinus)
   btnMinus:SetScript("OnClick", function()
+    local step = stepVal or 1
     local v = getVal()
-    v = v - 1
+    v = v - step
     if v < minVal then v = minVal end
     setVal(v)
     Sync()
@@ -25376,8 +25449,9 @@ function MakeNumberStepper(parent, label, yPos, getVal, setVal, minVal, maxVal)
   btnPlus:SetText("+")
   SkinButtonAccent(btnPlus)
   btnPlus:SetScript("OnClick", function()
+    local step = stepVal or 1
     local v = getVal()
-    v = v + 1
+    v = v + step
     if maxVal and v > maxVal then v = maxVal end
     setVal(v)
     Sync()
@@ -27162,13 +27236,7 @@ function LeafVE.UI:Build()
   self.frame = f
   f:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
   
-  local w = LeafVE_DB.ui.w or 1050
-  local h = LeafVE_DB.ui.h or 760
-  
-  if w < 950 then w = 950 end
-  if w > 1400 then w = 1400 end
-  if h < 760 then h = 760 end
-  if h > 1000 then h = 1000 end
+  local w, h = LeafVE:ClampUISize(LeafVE_DB.ui.w, LeafVE_DB.ui.h)
   
   f:SetWidth(w)
   f:SetHeight(h)
@@ -27203,6 +27271,9 @@ function LeafVE.UI:Build()
     if LeafVE_DB and LeafVE_DB.ui then
       LeafVE_DB.ui.w = f:GetWidth()
       LeafVE_DB.ui.h = f:GetHeight()
+    end
+    if LeafVE.UI and LeafVE.UI.panels and LeafVE.UI.panels.options and LeafVE.UI.panels.options:IsVisible() then
+      LeafVE.UI:RefreshOptions()
     end
   end)
 
@@ -28602,74 +28673,25 @@ SlashCmdList["LEAFVE"] = function(msg)
   local trimmedMsg = Trim(Lower(msg or ""))
   
   if trimmedMsg == "bigger" or trimmedMsg == "taller" then
-    EnsureDB()
-    LeafVE_DB.ui.h = (LeafVE_DB.ui.h or 700) + 50
-    if LeafVE_DB.ui.h > 1000 then LeafVE_DB.ui.h = 1000 end
-    Print("Height increased to: "..LeafVE_DB.ui.h)
-    if LeafVE.UI and LeafVE.UI.frame then
-      LeafVE.UI.frame:Hide()
-      LeafVE.UI.frame = nil
-      LeafVE.UI.panels = nil
-      LeafVE.UI.card = nil
-    end
-    LeafVE.UI = { activeTab = "me" }
-    LeafVE:ToggleUI()
+    local _, h = LeafVE:ApplyUISize(LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.w, (LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.h or LeafVE.uiDefaultHeight) + 50)
+    Print("Height increased to: "..h)
     
   elseif trimmedMsg == "smaller" or trimmedMsg == "shorter" then
-    EnsureDB()
-    LeafVE_DB.ui.h = (LeafVE_DB.ui.h or 700) - 50
-    if LeafVE_DB.ui.h < 600 then LeafVE_DB.ui.h = 600 end
-    Print("Height decreased to: "..LeafVE_DB.ui.h)
-    if LeafVE.UI and LeafVE.UI.frame then
-      LeafVE.UI.frame:Hide()
-      LeafVE.UI.frame = nil
-      LeafVE.UI.panels = nil
-      LeafVE.UI.card = nil
-    end
-    LeafVE.UI = { activeTab = "me" }
-    LeafVE:ToggleUI()
+    local _, h = LeafVE:ApplyUISize(LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.w, (LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.h or LeafVE.uiDefaultHeight) - 50)
+    Print("Height decreased to: "..h)
     
   elseif trimmedMsg == "wider" then
-    EnsureDB()
-    LeafVE_DB.ui.w = (LeafVE_DB.ui.w or 1050) + 50
-    if LeafVE_DB.ui.w > 1400 then LeafVE_DB.ui.w = 1400 end
-    Print("Width increased to: "..LeafVE_DB.ui.w)
-    if LeafVE.UI and LeafVE.UI.frame then
-      LeafVE.UI.frame:Hide()
-      LeafVE.UI.frame = nil
-      LeafVE.UI.panels = nil
-      LeafVE.UI.card = nil
-    end
-    LeafVE.UI = { activeTab = "me" }
-    LeafVE:ToggleUI()
+    local w = LeafVE:ApplyUISize((LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.w or LeafVE.uiDefaultWidth) + 50, LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.h)
+    Print("Width increased to: "..w)
     
   elseif trimmedMsg == "narrower" then
-    EnsureDB()
-    LeafVE_DB.ui.w = (LeafVE_DB.ui.w or 1050) - 50
-    if LeafVE_DB.ui.w < 950 then LeafVE_DB.ui.w = 950 end
-    Print("Width decreased to: "..LeafVE_DB.ui.w)
-    if LeafVE.UI and LeafVE.UI.frame then
-      LeafVE.UI.frame:Hide()
-      LeafVE.UI.frame = nil
-      LeafVE.UI.panels = nil
-      LeafVE.UI.card = nil
-    end
-    LeafVE.UI = { activeTab = "me" }
-    LeafVE:ToggleUI()
+    local w = LeafVE:ApplyUISize((LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.w or LeafVE.uiDefaultWidth) - 50, LeafVE_DB and LeafVE_DB.ui and LeafVE_DB.ui.h)
+    Print("Width decreased to: "..w)
     
   elseif trimmedMsg == "uireset" then
-    EnsureDB()
-    LeafVE_DB.ui.w = 1050
-    LeafVE_DB.ui.h = 700
+    local w, h = LeafVE:ResetUISize()
     Print("UI size reset to default!")
-    if LeafVE.UI and LeafVE.UI.frame then
-      LeafVE.UI.frame:Hide()
-      LeafVE.UI.frame = nil
-      LeafVE.UI.panels = nil
-      LeafVE.UI.card = nil
-    end
-    LeafVE.UI = { activeTab = "me" }
-    LeafVE:ToggleUI()
+    Print("Current size: "..w.." x "..h)
 
   elseif trimmedMsg == "debug" or trimmedMsg == "health" then
     EnsureDB()
