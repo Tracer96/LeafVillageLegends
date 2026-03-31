@@ -2,7 +2,7 @@
 ## Title: Leaf Village Legends
 ## Notes: Track guild contributions and leaderboards
 ## Author: YourName
-## Version: 14.3
+## Version: 14.5
 ## SavedVariables: LeafVE_GlobalDB
 ## SavedVariablesPerCharacter: LeafVE_DB
 ## OptionalDeps: AtlasLoot

@@ -21,7 +21,7 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "14.3"
+LeafVE.version = "14.5"
 LeafVE.guildBankOwner = "Methllyy"
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
@@ -29,7 +29,7 @@ LeafVE.guildBankOwner = "Methllyy"
 LeafVE.minCompatVersion = "14.3"
 
 -- The latest published version; used to detect when the running addon is outdated.
-local LATEST_VERSION = "14.3"
+local LATEST_VERSION = "14.5"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
@@ -5022,6 +5022,7 @@ local function RebuildGuildBankSnapshotTotals(cache)
   cache.totalSlots = (tonumber(cache.bagTotalSlots) or 0) + (tonumber(cache.bankTotalSlots) or 0)
   cache.totalItems = (tonumber(cache.bagTotalItems) or 0) + (tonumber(cache.bankTotalItems) or 0)
   cache.uniqueItems = table.getn(cache.itemOrder or {})
+  cache.totalsDirty = false
   return cache
 end
 
@@ -5049,6 +5050,7 @@ function LeafVE:ClearGuildBankSnapshot(ownerName)
   cache.totalItems = 0
   cache.uniqueItems = 0
   cache.goldCopper = 0
+  cache.totalsDirty = true
   return cache
 end
 
@@ -5088,7 +5090,9 @@ function LeafVE:GetGuildBankSnapshot()
   cache.bankTotalItems = tonumber(cache.bankTotalItems) or 0
   cache.bankUpdatedAt = tonumber(cache.bankUpdatedAt) or 0
   cache.goldCopper = tonumber(cache.goldCopper) or 0
-  RebuildGuildBankSnapshotTotals(cache)
+  if cache.totalsDirty ~= false then
+    RebuildGuildBankSnapshotTotals(cache)
+  end
   return cache
 end
 
@@ -5151,6 +5155,18 @@ function LeafVE:RequestGuildBankOwner(force)
   self.lastGuildBankOwnerRequestAt = now
   SendAddonMessage("LeafVE", force and "GBANKOWNERREQ_FORCE" or "GBANKOWNERREQ", "GUILD")
   return nil
+end
+
+function LeafVE:RequestGuildBankLightweightSync(force)
+  if not InGuild() then
+    return nil
+  end
+
+  self:RequestGuildBankOwner(force)
+  self:RequestGuildBankItemRequestSync(force)
+  self:RequestGuildBankCategoryOverrideSync(force)
+  self:RequestGuildBankHighValueSync(force)
+  return true
 end
 
 function LeafVE:SetGuildBankOwner(ownerName, suppressBroadcast, updatedAt, updatedBy)
@@ -5392,8 +5408,8 @@ function LeafVE:ScheduleIncomingGuildBankSnapshotMerge(refreshUI)
     local shouldRefreshUI = LeafVE.pendingGuildBankRemoteRefreshUI and true or false
     LeafVE.pendingGuildBankRemoteRefreshUI = nil
 
-    local cache = LeafVE:GetGuildBankSnapshot()
-    if type(cache) == "table" then
+    local cache = LeafVE_GlobalDB and LeafVE_GlobalDB.guildBankCache
+    if type(cache) == "table" and cache.totalsDirty ~= false then
       RebuildGuildBankSnapshotTotals(cache)
     end
     if shouldRefreshUI and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
@@ -5453,6 +5469,263 @@ function LeafVE:RequestGuildBankSnapshot(force)
   self.lastGuildBankRequestAt = now
   SendAddonMessage("LeafVE", force and "GBANKREQ_FORCE" or "GBANKREQ", "GUILD")
   return nil
+end
+
+function LeafVE:CanRelayGuildBankSnapshot(snapshot)
+  local bankSnapshot = type(snapshot) == "table" and snapshot or self:GetGuildBankSnapshot()
+  if type(bankSnapshot) ~= "table" then
+    return nil
+  end
+
+  local ownerName = ShortName(bankSnapshot.owner or self:GetGuildBankOwnerName())
+  if not ownerName or ownerName == "" or not self:IsGuildBankOwner(ownerName) then
+    return nil
+  end
+  if (tonumber(bankSnapshot.updatedAt) or 0) <= 0 then
+    return nil
+  end
+  if type(bankSnapshot.counts) ~= "table" or type(bankSnapshot.icons) ~= "table" then
+    return nil
+  end
+  return bankSnapshot, ownerName
+end
+
+function LeafVE:BroadcastCachedGuildBankSnapshot(force)
+  if not InGuild() then
+    return nil
+  end
+
+  local me = ShortName(UnitName("player"))
+  if me and self:IsGuildBankOwner(me) then
+    return self:BroadcastGuildBankSnapshot(force)
+  end
+
+  local snapshot, ownerName = self:CanRelayGuildBankSnapshot()
+  if not snapshot then
+    return nil
+  end
+
+  local now = Now()
+  self.lastGuildBankRelayBroadcastAt = self.lastGuildBankRelayBroadcastAt or 0
+  if not force and (now - self.lastGuildBankRelayBroadcastAt) < 5 then
+    return snapshot
+  end
+  self.lastGuildBankRelayBroadcastAt = now
+
+  SendAddonMessage(
+    "LeafVE",
+    "GBANKRELAYMETA:" .. tostring(ownerName) .. ":" .. tostring(snapshot.updatedAt or now) .. ":" ..
+      tostring(snapshot.usedSlots or 0) .. ":" .. tostring(snapshot.totalSlots or 0) .. ":" ..
+      tostring(snapshot.totalItems or 0) .. ":" .. tostring(snapshot.uniqueItems or 0) .. ":" ..
+      tostring(snapshot.goldCopper or 0),
+    "GUILD"
+  )
+  SendChunkedSnapshot("GBANKRELAY:", ownerName, snapshot.updatedAt or now, snapshot.itemOrder or {}, snapshot.counts or {})
+  SendChunkedSnapshot("GBANKRELAYICON:", ownerName, snapshot.updatedAt or now, snapshot.itemOrder or {}, snapshot.icons or {})
+  return snapshot
+end
+
+function LeafVE:ValidateIncomingGuildBankSnapshotSource(sender, declaredName, allowRelay)
+  local ownerName = ShortName(declaredName or "")
+  local shortSender = ShortName(sender)
+  if not ownerName or ownerName == "" or not self:IsGuildBankOwner(ownerName) then
+    return nil
+  end
+  if not shortSender or shortSender == "" then
+    return nil
+  end
+  if not allowRelay and Lower(shortSender) ~= Lower(ownerName) then
+    return nil
+  end
+  return ownerName
+end
+
+function LeafVE:HandleIncomingGuildBankMetaPayload(payload, sender, allowRelay)
+  local rest = payload or ""
+  local p1 = string.find(rest, ":")
+  if not p1 then return end
+  local ownerName = self:ValidateIncomingGuildBankSnapshotSource(sender, string.sub(rest, 1, p1 - 1), allowRelay)
+  if not ownerName then return end
+
+  local rest2 = string.sub(rest, p1 + 1)
+  local p2 = string.find(rest2, ":")
+  if not p2 then return end
+  local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
+  local rest3 = string.sub(rest2, p2 + 1)
+  local p3 = string.find(rest3, ":")
+  if not p3 then return end
+  local usedSlots = tonumber(string.sub(rest3, 1, p3 - 1)) or 0
+  local rest4 = string.sub(rest3, p3 + 1)
+  local p4 = string.find(rest4, ":")
+  if not p4 then return end
+  local totalSlots = tonumber(string.sub(rest4, 1, p4 - 1)) or 0
+  local rest5 = string.sub(rest4, p4 + 1)
+  local p5 = string.find(rest5, ":")
+  if not p5 then return end
+  local totalItems = tonumber(string.sub(rest5, 1, p5 - 1)) or 0
+  local rest6 = string.sub(rest5, p5 + 1)
+  local p6 = string.find(rest6, ":")
+  local uniqueItems, goldCopper
+  if p6 then
+    uniqueItems = tonumber(string.sub(rest6, 1, p6 - 1)) or 0
+    goldCopper = tonumber(string.sub(rest6, p6 + 1)) or 0
+  else
+    uniqueItems = tonumber(rest6) or 0
+    goldCopper = 0
+  end
+
+  local cache = self:GetGuildBankSnapshot()
+  if updatedAt > (cache.updatedAt or 0) then
+    cache.bagCounts = {}
+    cache.bankCounts = {}
+    cache.bagIcons = {}
+    cache.bankIcons = {}
+    cache.icons = {}
+    cache.counts = {}
+    cache.itemOrder = {}
+    cache.bankUsedSlots = 0
+    cache.bankTotalSlots = 0
+    cache.bankTotalItems = 0
+    cache.bankUpdatedAt = 0
+    cache.goldCopper = 0
+  end
+  if updatedAt >= (cache.updatedAt or 0) then
+    cache.owner = ownerName
+    cache.updatedAt = updatedAt
+    cache.remoteMergedSnapshot = true
+    cache.bagUsedSlots = usedSlots
+    cache.bagTotalSlots = totalSlots
+    cache.bagTotalItems = totalItems
+    cache.bankUsedSlots = 0
+    cache.bankTotalSlots = 0
+    cache.bankTotalItems = 0
+    cache.bankUpdatedAt = 0
+    cache.usedSlots = usedSlots
+    cache.totalSlots = totalSlots
+    cache.totalItems = totalItems
+    cache.uniqueItems = uniqueItems
+    cache.goldCopper = goldCopper
+    cache.totalsDirty = true
+  end
+  self:ScheduleIncomingGuildBankSnapshotMerge(true)
+end
+
+function LeafVE:HandleIncomingGuildBankCountPayload(payload, sender, allowRelay)
+  local rest = payload or ""
+  local p1 = string.find(rest, ":")
+  if not p1 then return end
+  local ownerName = self:ValidateIncomingGuildBankSnapshotSource(sender, string.sub(rest, 1, p1 - 1), allowRelay)
+  if not ownerName then return end
+
+  local rest2 = string.sub(rest, p1 + 1)
+  local p2 = string.find(rest2, ":")
+  if not p2 then return end
+  local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
+  local itemData = string.sub(rest2, p2 + 1)
+
+  local cache = self:GetGuildBankSnapshot()
+  if updatedAt > (cache.updatedAt or 0) then
+    cache.bagCounts = {}
+    cache.bankCounts = {}
+    cache.bagIcons = {}
+    cache.bankIcons = {}
+    cache.icons = {}
+    cache.counts = {}
+    cache.itemOrder = {}
+    cache.bagUsedSlots = 0
+    cache.bagTotalSlots = 0
+    cache.bagTotalItems = 0
+    cache.bankUsedSlots = 0
+    cache.bankTotalSlots = 0
+    cache.bankTotalItems = 0
+    cache.bankUpdatedAt = 0
+    cache.usedSlots = 0
+    cache.totalSlots = 0
+    cache.totalItems = 0
+    cache.uniqueItems = 0
+    cache.goldCopper = 0
+  end
+  if updatedAt >= (cache.updatedAt or 0) then
+    cache.owner = ownerName
+    cache.updatedAt = updatedAt
+    cache.remoteMergedSnapshot = true
+    if type(cache.bagCounts) ~= "table" then
+      cache.bagCounts = {}
+    end
+    local startPos = 1
+    while startPos <= string.len(itemData) do
+      local commaPos = string.find(itemData, ",", startPos)
+      local entry
+      if commaPos then
+        entry = string.sub(itemData, startPos, commaPos - 1)
+        startPos = commaPos + 1
+      else
+        entry = string.sub(itemData, startPos)
+        startPos = string.len(itemData) + 1
+      end
+      local eqPos = string.find(entry, "=")
+      if eqPos then
+        local itemKey = string.sub(entry, 1, eqPos - 1)
+        local count = tonumber(string.sub(entry, eqPos + 1))
+        if itemKey ~= "" and count and count > 0 then
+          cache.bagCounts[itemKey] = count
+        end
+      end
+    end
+    cache.totalsDirty = true
+  end
+  self:ScheduleIncomingGuildBankSnapshotMerge(true)
+end
+
+function LeafVE:HandleIncomingGuildBankIconPayload(payload, sender, allowRelay)
+  local rest = payload or ""
+  local p1 = string.find(rest, ":")
+  if not p1 then return end
+  local ownerName = self:ValidateIncomingGuildBankSnapshotSource(sender, string.sub(rest, 1, p1 - 1), allowRelay)
+  if not ownerName then return end
+
+  local rest2 = string.sub(rest, p1 + 1)
+  local p2 = string.find(rest2, ":")
+  if not p2 then return end
+  local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
+  local iconData = string.sub(rest2, p2 + 1)
+
+  local cache = self:GetGuildBankSnapshot()
+  if updatedAt > (cache.updatedAt or 0) then
+    cache.bagIcons = {}
+    cache.bankIcons = {}
+    cache.icons = {}
+  end
+  if updatedAt >= (cache.updatedAt or 0) then
+    cache.owner = ownerName
+    cache.updatedAt = updatedAt
+    cache.remoteMergedSnapshot = true
+    if type(cache.bagIcons) ~= "table" then
+      cache.bagIcons = {}
+    end
+    local startPos = 1
+    while startPos <= string.len(iconData) do
+      local commaPos = string.find(iconData, ",", startPos)
+      local entry
+      if commaPos then
+        entry = string.sub(iconData, startPos, commaPos - 1)
+        startPos = commaPos + 1
+      else
+        entry = string.sub(iconData, startPos)
+        startPos = string.len(iconData) + 1
+      end
+      local eqPos = string.find(entry, "=")
+      if eqPos then
+        local itemKey = string.sub(entry, 1, eqPos - 1)
+        local iconPath = NormalizeIconPath(string.sub(entry, eqPos + 1))
+        if itemKey ~= "" and iconPath then
+          cache.bagIcons[itemKey] = iconPath
+        end
+      end
+    end
+    cache.totalsDirty = true
+  end
+  self:ScheduleIncomingGuildBankSnapshotMerge(true)
 end
 
 function LeafVE:BuildGuildBankDisplayItems(snapshot)
@@ -7977,14 +8250,6 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
         -- Respond with owner-authenticated self snapshot (My Stats exact values).
         LeafVE:BroadcastLeaderboardData(false)
       end
-      if forceRespond or (now - self.lastShoutSyncRespondAt) >= SHOUT_SYNC_RESPOND_COOLDOWN then
-        self.lastShoutSyncRespondAt = now
-        LeafVE:BroadcastShoutoutHistory()
-      end
-      if forceRespond or (now - self.lastBadgeSyncRespondAt) >= LBOARD_RESPOND_COOLDOWN then
-        self.lastBadgeSyncRespondAt = now
-        LeafVE:BroadcastBadges()
-      end
       if forceRespond or (now - self.lastAchSyncRespondAt) >= LBOARD_RESPOND_COOLDOWN then
         self.lastAchSyncRespondAt = now
         LeafVE:BroadcastMyAchievements()
@@ -8296,194 +8561,43 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
   if message == "GBANKREQ" or message == "GBANKREQ_FORCE" then
     local forceRespond = (message == "GBANKREQ_FORCE")
     local me = ShortName(UnitName("player"))
-    if me and sender ~= me and self:IsGuildBankOwner(me) then
-      self:BroadcastGuildBankSnapshot(forceRespond)
+    if me and sender ~= me then
+      if self:IsGuildBankOwner(me) then
+        self:BroadcastGuildBankSnapshot(forceRespond)
+      else
+        self:BroadcastCachedGuildBankSnapshot(forceRespond)
+      end
     end
     return
   end
 
   if string.sub(message, 1, 10) == "GBANKMETA:" then
-    local rest = string.sub(message, 11)
-    local p1 = string.find(rest, ":")
-    if not p1 then return end
-    local declaredName = string.sub(rest, 1, p1 - 1)
-    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) or not self:IsGuildBankOwner(sender) then return end
-    local rest2 = string.sub(rest, p1 + 1)
-    local p2 = string.find(rest2, ":")
-    if not p2 then return end
-    local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
-    local rest3 = string.sub(rest2, p2 + 1)
-    local p3 = string.find(rest3, ":")
-    if not p3 then return end
-    local usedSlots = tonumber(string.sub(rest3, 1, p3 - 1)) or 0
-    local rest4 = string.sub(rest3, p3 + 1)
-    local p4 = string.find(rest4, ":")
-    if not p4 then return end
-    local totalSlots = tonumber(string.sub(rest4, 1, p4 - 1)) or 0
-    local rest5 = string.sub(rest4, p4 + 1)
-    local p5 = string.find(rest5, ":")
-    if not p5 then return end
-    local totalItems = tonumber(string.sub(rest5, 1, p5 - 1)) or 0
-    local rest6 = string.sub(rest5, p5 + 1)
-    local p6 = string.find(rest6, ":")
-    local uniqueItems, goldCopper
-    if p6 then
-      uniqueItems = tonumber(string.sub(rest6, 1, p6 - 1)) or 0
-      goldCopper = tonumber(string.sub(rest6, p6 + 1)) or 0
-    else
-      uniqueItems = tonumber(rest6) or 0
-      goldCopper = 0
-    end
-
-    local cache = self:GetGuildBankSnapshot()
-    if updatedAt > (cache.updatedAt or 0) then
-      cache.bagCounts = {}
-      cache.bankCounts = {}
-      cache.bagIcons = {}
-      cache.bankIcons = {}
-      cache.icons = {}
-      cache.counts = {}
-      cache.itemOrder = {}
-      cache.bankUsedSlots = 0
-      cache.bankTotalSlots = 0
-      cache.bankTotalItems = 0
-      cache.bankUpdatedAt = 0
-      cache.goldCopper = 0
-    end
-    if updatedAt >= (cache.updatedAt or 0) then
-      cache.owner = sender
-      cache.updatedAt = updatedAt
-      cache.remoteMergedSnapshot = true
-      cache.bagUsedSlots = usedSlots
-      cache.bagTotalSlots = totalSlots
-      cache.bagTotalItems = totalItems
-      cache.bankUsedSlots = 0
-      cache.bankTotalSlots = 0
-      cache.bankTotalItems = 0
-      cache.bankUpdatedAt = 0
-      cache.usedSlots = usedSlots
-      cache.totalSlots = totalSlots
-      cache.totalItems = totalItems
-      cache.uniqueItems = uniqueItems
-      cache.goldCopper = goldCopper
-    end
-    self:ScheduleIncomingGuildBankSnapshotMerge(true)
+    self:HandleIncomingGuildBankMetaPayload(string.sub(message, 11), sender, nil)
     return
   end
 
   if string.sub(message, 1, 6) == "GBANK:" then
-    local rest = string.sub(message, 7)
-    local p1 = string.find(rest, ":")
-    if not p1 then return end
-    local declaredName = string.sub(rest, 1, p1 - 1)
-    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) or not self:IsGuildBankOwner(sender) then return end
-    local rest2 = string.sub(rest, p1 + 1)
-    local p2 = string.find(rest2, ":")
-    if not p2 then return end
-    local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
-    local itemData = string.sub(rest2, p2 + 1)
-
-    local cache = self:GetGuildBankSnapshot()
-    if updatedAt > (cache.updatedAt or 0) then
-      cache.bagCounts = {}
-      cache.bankCounts = {}
-      cache.bagIcons = {}
-      cache.bankIcons = {}
-      cache.icons = {}
-      cache.counts = {}
-      cache.itemOrder = {}
-      cache.bagUsedSlots = 0
-      cache.bagTotalSlots = 0
-      cache.bagTotalItems = 0
-      cache.bankUsedSlots = 0
-      cache.bankTotalSlots = 0
-      cache.bankTotalItems = 0
-      cache.bankUpdatedAt = 0
-      cache.usedSlots = 0
-      cache.totalSlots = 0
-      cache.totalItems = 0
-      cache.uniqueItems = 0
-      cache.goldCopper = 0
-    end
-    if updatedAt >= (cache.updatedAt or 0) then
-      cache.owner = sender
-      cache.updatedAt = updatedAt
-      cache.remoteMergedSnapshot = true
-      if type(cache.bagCounts) ~= "table" then
-        cache.bagCounts = {}
-      end
-      local startPos = 1
-      while startPos <= string.len(itemData) do
-        local commaPos = string.find(itemData, ",", startPos)
-        local entry
-        if commaPos then
-          entry = string.sub(itemData, startPos, commaPos - 1)
-          startPos = commaPos + 1
-        else
-          entry = string.sub(itemData, startPos)
-          startPos = string.len(itemData) + 1
-        end
-        local eqPos = string.find(entry, "=")
-        if eqPos then
-          local itemKey = string.sub(entry, 1, eqPos - 1)
-          local count = tonumber(string.sub(entry, eqPos + 1))
-          if itemKey ~= "" and count and count > 0 then
-            cache.bagCounts[itemKey] = count
-          end
-        end
-      end
-    end
-    self:ScheduleIncomingGuildBankSnapshotMerge(true)
+    self:HandleIncomingGuildBankCountPayload(string.sub(message, 7), sender, nil)
     return
   end
 
   if string.sub(message, 1, 10) == "GBANKICON:" then
-    local rest = string.sub(message, 11)
-    local p1 = string.find(rest, ":")
-    if not p1 then return end
-    local declaredName = string.sub(rest, 1, p1 - 1)
-    if Lower(sender) ~= Lower(ShortName(declaredName) or declaredName) or not self:IsGuildBankOwner(sender) then return end
-    local rest2 = string.sub(rest, p1 + 1)
-    local p2 = string.find(rest2, ":")
-    if not p2 then return end
-    local updatedAt = tonumber(string.sub(rest2, 1, p2 - 1)) or Now()
-    local iconData = string.sub(rest2, p2 + 1)
+    self:HandleIncomingGuildBankIconPayload(string.sub(message, 11), sender, nil)
+    return
+  end
 
-    local cache = self:GetGuildBankSnapshot()
-    if updatedAt > (cache.updatedAt or 0) then
-      cache.bagIcons = {}
-      cache.bankIcons = {}
-      cache.icons = {}
-    end
-    if updatedAt >= (cache.updatedAt or 0) then
-      cache.owner = sender
-      cache.updatedAt = updatedAt
-      cache.remoteMergedSnapshot = true
-      if type(cache.bagIcons) ~= "table" then
-        cache.bagIcons = {}
-      end
-      local startPos = 1
-      while startPos <= string.len(iconData) do
-        local commaPos = string.find(iconData, ",", startPos)
-        local entry
-        if commaPos then
-          entry = string.sub(iconData, startPos, commaPos - 1)
-          startPos = commaPos + 1
-        else
-          entry = string.sub(iconData, startPos)
-          startPos = string.len(iconData) + 1
-        end
-        local eqPos = string.find(entry, "=")
-        if eqPos then
-          local itemKey = string.sub(entry, 1, eqPos - 1)
-          local iconPath = NormalizeIconPath(string.sub(entry, eqPos + 1))
-          if itemKey ~= "" and iconPath then
-            cache.bagIcons[itemKey] = iconPath
-          end
-        end
-      end
-    end
-    self:ScheduleIncomingGuildBankSnapshotMerge(true)
+  if string.sub(message, 1, 15) == "GBANKRELAYMETA:" then
+    self:HandleIncomingGuildBankMetaPayload(string.sub(message, 16), sender, true)
+    return
+  end
+
+  if string.sub(message, 1, 11) == "GBANKRELAY:" then
+    self:HandleIncomingGuildBankCountPayload(string.sub(message, 12), sender, true)
+    return
+  end
+
+  if string.sub(message, 1, 15) == "GBANKRELAYICON:" then
+    self:HandleIncomingGuildBankIconPayload(string.sub(message, 16), sender, true)
     return
   end
 
@@ -10229,6 +10343,427 @@ local function TabButton(parent, text, name)
   return b
 end
 
+function LeafVE.UI:LayoutLegacyMainTabs()
+  local frame = self and self.frame
+  if not frame then
+    return
+  end
+
+  local firstRow = {
+    {btn = self.tabWelcome, width = 65},
+    {btn = self.tabMe, width = 70},
+    {btn = self.tabRoster, width = 60},
+    {btn = self.tabLeaderWeek, width = 60},
+    {btn = self.tabLeaderLife, width = 65},
+    {btn = self.tabAchievements, width = 95},
+    {btn = self.tabShoutouts, width = 80},
+    {btn = self.tabRaidSignups, width = 92},
+    {btn = self.tabGuildEvents, width = 88},
+    {btn = self.tabHistory, width = 60},
+    {btn = self.tabLiveHistory, width = 80},
+    {btn = self.tabBadges, width = 65},
+    {btn = self.tabOptions, width = 56},
+  }
+
+  local previousButton = nil
+  for i = 1, table.getn(firstRow) do
+    local entry = firstRow[i]
+    local button = entry.btn
+    if button then
+      button:ClearAllPoints()
+      button:SetWidth(entry.width)
+      if previousButton then
+        button:SetPoint("LEFT", previousButton, "RIGHT", 4, 0)
+      else
+        button:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -52)
+      end
+      previousButton = button
+    end
+  end
+
+  if self.tabAdmin then
+    self.tabAdmin:ClearAllPoints()
+    self.tabAdmin:SetWidth(50)
+    self.tabAdmin:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
+  end
+
+  if self.tabGuildBank then
+    self.tabGuildBank:ClearAllPoints()
+    self.tabGuildBank:SetWidth(78)
+    if self.tabAdmin and self.tabAdmin:IsShown() then
+      self.tabGuildBank:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
+    else
+      self.tabGuildBank:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
+    end
+  end
+
+  if self.tabWorkOrderRep then
+    self.tabWorkOrderRep:ClearAllPoints()
+    self.tabWorkOrderRep:SetWidth(142)
+    if self.tabGuildBank then
+      self.tabWorkOrderRep:SetPoint("LEFT", self.tabGuildBank, "RIGHT", 4, 0)
+    end
+  end
+
+  if self.tabJoin then
+    self.tabJoin:ClearAllPoints()
+    self.tabJoin:SetPoint("TOPLEFT", frame, "TOPLEFT", 14, -52)
+    self.tabJoin:SetWidth(300)
+  end
+end
+
+local LEAFVE_GROUPED_NAV = {
+  {
+    key = "welcome",
+    label = "Welcome",
+    width = 82,
+    standalone = true,
+    defaultTab = "welcome",
+    subtabs = {},
+  },
+  {
+    key = "character",
+    label = "Character",
+    width = 88,
+    defaultTab = "me",
+    subtabs = {
+      {tab = "me", label = "My Stats", width = 72},
+      {tab = "leaderWeek", label = "Weekly", width = 62},
+      {tab = "leaderLife", label = "Lifetime", width = 68},
+      {tab = "achievements", label = "Achievements", width = 92},
+      {tab = "badges", label = "Badges", width = 66},
+      {tab = "roster", label = "Roster", width = 62},
+      {tab = "shoutouts", label = "Shoutouts", width = 82},
+    },
+  },
+  {
+    key = "calendar",
+    label = "Calendar",
+    width = 82,
+    defaultTab = "raidSignups",
+    subtabs = {
+      {tab = "raidSignups", label = "Raid Sign-Ups", width = 96},
+      {tab = "guildEvents", label = "Guild Events", width = 92},
+    },
+  },
+  {
+    key = "bank",
+    label = "Bank",
+    width = 64,
+    defaultTab = "guildBank",
+    subtabs = {
+      {tab = "guildBank", label = "Guild Bank", width = 82},
+    },
+  },
+  {
+    key = "orders",
+    label = "Orders",
+    width = 70,
+    defaultTab = "workOrderRep",
+    subtabs = {
+      {tab = "workOrdersPopup", label = "Work Orders", width = 92},
+      {tab = "workOrderRep", label = "Reputation", width = 84},
+    },
+  },
+  {
+    key = "options",
+    label = "Options",
+    width = 76,
+    defaultTab = "options",
+    subtabs = {
+      {tab = "options", label = "Options", width = 70},
+      {tab = "history", label = "History", width = 64},
+      {tab = "liveHistory", label = "Live History", width = 86},
+      {tab = "admin", label = "Admin", width = 56, adminOnly = true},
+    },
+  },
+}
+
+local LEAFVE_GROUPED_TAB_TO_CATEGORY = {
+  welcome = "welcome",
+  me = "character",
+  leaderWeek = "character",
+  leaderLife = "character",
+  achievements = "character",
+  badges = "character",
+  roster = "character",
+  shoutouts = "character",
+  raidSignups = "calendar",
+  guildEvents = "calendar",
+  guildBank = "bank",
+  workOrderRep = "orders",
+  options = "options",
+  history = "options",
+  liveHistory = "options",
+  admin = "options",
+}
+
+function LeafVE.UI:GetGroupedNavCategory(categoryKey)
+  for i = 1, table.getn(LEAFVE_GROUPED_NAV) do
+    local category = LEAFVE_GROUPED_NAV[i]
+    if category.key == categoryKey then
+      return category
+    end
+  end
+  return nil
+end
+
+function LeafVE.UI:GetGroupedNavCategoryForTab(tabKey)
+  return LEAFVE_GROUPED_TAB_TO_CATEGORY[tostring(tabKey or "")]
+end
+
+function LeafVE.UI:GetGroupedNavVisibleSubtabs(categoryKey)
+  local category = self:GetGroupedNavCategory(categoryKey)
+  local visible = {}
+  if not category or category.standalone then
+    return visible
+  end
+
+  for i = 1, table.getn(category.subtabs or {}) do
+    local subtab = category.subtabs[i]
+    if not subtab.adminOnly or LeafVE:IsAdminRank() then
+      table.insert(visible, subtab)
+    end
+  end
+  return visible
+end
+
+function LeafVE.UI:HideLegacyMainTabs()
+  local legacyTabs = {
+    self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife,
+    self.tabAchievements, self.tabShoutouts, self.tabRaidSignups, self.tabGuildEvents,
+    self.tabHistory, self.tabLiveHistory, self.tabBadges, self.tabOptions,
+    self.tabAdmin, self.tabGuildBank, self.tabWorkOrderRep,
+  }
+  for i = 1, table.getn(legacyTabs) do
+    if legacyTabs[i] then
+      legacyTabs[i]:Hide()
+    end
+  end
+end
+
+function LeafVE.UI:OpenWorkOrdersPopupFromNav()
+  local playerName = self.cardCurrentPlayer or ShortName(UnitName("player"))
+  if not playerName then
+    return
+  end
+
+  if self.allBadgesFrame and self.allBadgesFrame:IsVisible() then
+    self.allBadgesFrame:Hide()
+  end
+  if self.achPopup and self.achPopup:IsVisible() then
+    self.achPopup:Hide()
+  end
+  if self.gearPopup and self.gearPopup:IsVisible() then
+    self.gearPopup:Hide()
+  end
+  if self.talentPopup and self.talentPopup:IsVisible() then
+    self.talentPopup:Hide()
+  end
+  if self.professionPopup and self.professionPopup:IsVisible() then
+    self.professionPopup:Hide()
+  end
+  if self.guildBankPopup and self.guildBankPopup:IsVisible() then
+    self.guildBankPopup:Hide()
+  end
+  self:HideNativeTalentFrame()
+
+  if not self.workOrderPopup then
+    self:CreateWorkOrderPopup()
+  end
+  self:RefreshWorkOrderPopup(playerName)
+  self.workOrderPopup:Show()
+end
+
+function LeafVE.UI:BuildGroupedNavigation(parent)
+  if self.navCategoryButtons then
+    return
+  end
+
+  self.navCategoryButtons = {}
+  self.navSubtabButtons = {}
+  self.navLastTabByCategory = {
+    welcome = "welcome",
+    character = "me",
+    calendar = "raidSignups",
+    bank = "guildBank",
+    orders = "workOrderRep",
+    options = "options",
+  }
+
+  local previousButton = nil
+  for i = 1, table.getn(LEAFVE_GROUPED_NAV) do
+    local category = LEAFVE_GROUPED_NAV[i]
+    local btn = CreateWorkOrderModeButton(parent, category.label)
+    btn:SetHeight(20)
+    btn:SetWidth(category.width or 76)
+    if previousButton then
+      btn:SetPoint("LEFT", previousButton, "RIGHT", 4, 0)
+    else
+      btn:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, -52)
+    end
+    btn.categoryKey = category.key
+    btn.ownerUI = self
+    btn:SetScript("OnClick", function()
+      local owner = this.ownerUI
+      local categoryKey = this.categoryKey
+      local categoryConfig = owner:GetGroupedNavCategory(categoryKey)
+      if not categoryConfig then
+        return
+      end
+
+      owner.activeCategory = categoryKey
+      owner.activeNavSubTab = nil
+
+      local visibleSubtabs = owner:GetGroupedNavVisibleSubtabs(categoryKey)
+      local targetTab = owner.navLastTabByCategory and owner.navLastTabByCategory[categoryKey] or categoryConfig.defaultTab
+      local isTargetVisible = false
+      for j = 1, table.getn(visibleSubtabs) do
+        if visibleSubtabs[j].tab == targetTab then
+          isTargetVisible = true
+          break
+        end
+      end
+      if not isTargetVisible then
+        targetTab = categoryConfig.defaultTab
+      end
+      if (not targetTab or targetTab == "") and table.getn(visibleSubtabs) > 0 then
+        targetTab = visibleSubtabs[1].tab
+      end
+      if not targetTab or targetTab == "" then
+        targetTab = categoryConfig.defaultTab
+      end
+
+      if targetTab == "workOrdersPopup" then
+        owner.activeTab = "workOrderRep"
+        owner.activeNavSubTab = "workOrdersPopup"
+        owner:Refresh()
+        owner:OpenWorkOrdersPopupFromNav()
+        return
+      end
+
+      owner.activeTab = targetTab
+      if owner.navLastTabByCategory then
+        owner.navLastTabByCategory[categoryKey] = targetTab
+      end
+      owner:Refresh()
+    end)
+    self.navCategoryButtons[category.key] = btn
+    previousButton = btn
+  end
+
+  for i = 1, 7 do
+    local btn = CreateWorkOrderModeButton(parent, "")
+    btn:SetHeight(20)
+    btn:SetWidth(80)
+    if i == 1 then
+      btn:SetPoint("TOPLEFT", parent, "TOPLEFT", 14, -78)
+    else
+      btn:SetPoint("LEFT", self.navSubtabButtons[i - 1], "RIGHT", 4, 0)
+    end
+    btn.ownerUI = self
+    btn:Hide()
+    btn:SetScript("OnClick", function()
+      local owner = this.ownerUI
+      local targetTab = this.targetTab
+      local categoryKey = this.categoryKey
+      if not owner or not targetTab or targetTab == "" then
+        return
+      end
+
+      owner.activeCategory = categoryKey
+      if targetTab == "workOrdersPopup" then
+        owner.activeTab = "workOrderRep"
+        owner.activeNavSubTab = "workOrdersPopup"
+        owner:Refresh()
+        owner:OpenWorkOrdersPopupFromNav()
+        return
+      end
+
+      owner.activeTab = targetTab
+      owner.activeNavSubTab = nil
+      if owner.navLastTabByCategory then
+        owner.navLastTabByCategory[categoryKey] = targetTab
+      end
+      owner:Refresh()
+    end)
+    self.navSubtabButtons[i] = btn
+  end
+end
+
+function LeafVE.UI:RefreshGroupedNavigation(hasAccess)
+  self:HideLegacyMainTabs()
+
+  if not self.navCategoryButtons or not self.navSubtabButtons then
+    return
+  end
+
+  if not hasAccess then
+    for _, category in ipairs(LEAFVE_GROUPED_NAV) do
+      if self.navCategoryButtons[category.key] then
+        self.navCategoryButtons[category.key]:Hide()
+      end
+    end
+    for i = 1, table.getn(self.navSubtabButtons) do
+      self.navSubtabButtons[i]:Hide()
+    end
+    return
+  end
+
+  local categoryKey = self:GetGroupedNavCategoryForTab(self.activeTab) or self.activeCategory or "character"
+  local category = self:GetGroupedNavCategory(categoryKey) or self:GetGroupedNavCategory("character")
+  if not category then
+    return
+  end
+  categoryKey = category.key
+  self.activeCategory = categoryKey
+
+  if self.navLastTabByCategory and self.activeTab and self:GetGroupedNavCategoryForTab(self.activeTab) == categoryKey then
+    self.navLastTabByCategory[categoryKey] = self.activeTab
+  end
+
+  for i = 1, table.getn(LEAFVE_GROUPED_NAV) do
+    local categoryInfo = LEAFVE_GROUPED_NAV[i]
+    local btn = self.navCategoryButtons[categoryInfo.key]
+    if btn then
+      btn:Show()
+      btn.text:SetText(categoryInfo.label)
+      btn:SetWidth(categoryInfo.width or 76)
+      UpdateWorkOrderModeButtonVisual(btn, categoryInfo.key == categoryKey)
+    end
+  end
+
+  local selectedSubtab = self.activeTab
+  if categoryKey == "orders" and self.activeNavSubTab == "workOrdersPopup" and self.workOrderPopup and self.workOrderPopup:IsVisible() then
+    selectedSubtab = "workOrdersPopup"
+  end
+
+  local visibleSubtabs = self:GetGroupedNavVisibleSubtabs(categoryKey)
+  if category.standalone or table.getn(visibleSubtabs) < 1 then
+    for i = 1, table.getn(self.navSubtabButtons) do
+      self.navSubtabButtons[i]:Hide()
+    end
+    return
+  end
+
+  for i = 1, table.getn(self.navSubtabButtons) do
+    local btn = self.navSubtabButtons[i]
+    local subtab = visibleSubtabs[i]
+    if btn and subtab then
+      btn.targetTab = subtab.tab
+      btn.categoryKey = categoryKey
+      btn.text:SetText(subtab.label)
+      btn:SetWidth(subtab.width or 78)
+      btn:Show()
+      UpdateWorkOrderModeButtonVisual(btn, selectedSubtab == subtab.tab)
+    elseif btn then
+      btn.targetTab = nil
+      btn.categoryKey = nil
+      btn:Hide()
+    end
+  end
+end
+
 function LeafVE.UI:BuildPlayerCard(parent)
   if self.card then return end
   
@@ -10901,7 +11436,53 @@ leafEmblem:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1.0)
   self.cardWorkOrderCrafterRankBadge:SetScript("OnLeave", function()
     GameTooltip:Hide()
   end)
- end
+
+  self.cardWeeklyCharacterRankBadge = CreateFrame("Button", nil, c)
+  self.cardWeeklyCharacterRankBadge:SetWidth(cardButtonMiddleWidth + 18)
+  self.cardWeeklyCharacterRankBadge:SetHeight(20)
+  self.cardWeeklyCharacterRankBadge:SetPoint("TOP", self.cardWorkOrderCrafterRankBadge, "BOTTOM", 0, -4)
+  self.cardWeeklyCharacterRankBadge:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+    tile = false, tileSize = 8, edgeSize = 10,
+    insets = {left = 2, right = 2, top = 2, bottom = 2}
+  })
+  self.cardWeeklyCharacterRankBadge:SetBackdropColor(0.08, 0.08, 0.1, 0.9)
+  self.cardWeeklyCharacterRankBadge:SetBackdropBorderColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.8)
+  self.cardWeeklyCharacterRankBadge:Hide()
+
+  self.cardWeeklyCharacterRankBadgeIcon = self.cardWeeklyCharacterRankBadge:CreateTexture(nil, "ARTWORK")
+  self.cardWeeklyCharacterRankBadgeIcon:SetPoint("LEFT", self.cardWeeklyCharacterRankBadge, "LEFT", 8, 0)
+  self.cardWeeklyCharacterRankBadgeIcon:SetWidth(14)
+  self.cardWeeklyCharacterRankBadgeIcon:SetHeight(14)
+  self.cardWeeklyCharacterRankBadgeIcon:SetTexture(PVP_RANK_ICONS[1] or "Interface\\Icons\\INV_Misc_Horn_03")
+
+  self.cardWeeklyCharacterRankBadgeText = self.cardWeeklyCharacterRankBadge:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  self.cardWeeklyCharacterRankBadgeText:SetPoint("LEFT", self.cardWeeklyCharacterRankBadgeIcon, "RIGHT", 6, 0)
+  self.cardWeeklyCharacterRankBadgeText:SetPoint("RIGHT", self.cardWeeklyCharacterRankBadge, "RIGHT", -8, 0)
+  self.cardWeeklyCharacterRankBadgeText:SetJustifyH("CENTER")
+  self.cardWeeklyCharacterRankBadgeText:SetText("|cFFFFD700#1 Ranked Shinobi|r")
+
+  self.cardWeeklyCharacterRankBadge:SetScript("OnEnter", function()
+    if not LeafVE or not LeafVE.UI or not LeafVE.UI.cardCurrentPlayer then return end
+
+    local weeklyRank, weeklyEntry = LeafVE:GetWeeklyCharacterRankInfo(LeafVE.UI.cardCurrentPlayer)
+    if not weeklyRank then return end
+
+    GameTooltip:SetOwner(this, "ANCHOR_TOP")
+    GameTooltip:ClearLines()
+    GameTooltip:SetText("Current Weekly Rank", THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, true)
+    GameTooltip:AddLine(tostring(GetWeeklyCharacterRankLabel(weeklyRank) or ""), 1.0, 0.82, 0.2)
+    GameTooltip:AddLine("Weekly Points: " .. tostring(weeklyEntry and weeklyEntry.total or 0), 0.75, 0.95, 0.75)
+    GameTooltip:AddLine("Login: " .. tostring(weeklyEntry and weeklyEntry.L or 0), 0.75, 0.85, 1.0)
+    GameTooltip:AddLine("Group: " .. tostring(weeklyEntry and weeklyEntry.G or 0), 0.85, 0.92, 0.75)
+    GameTooltip:AddLine("Shoutout: " .. tostring(weeklyEntry and weeklyEntry.S or 0), 0.95, 0.82, 0.45)
+    GameTooltip:Show()
+  end)
+  self.cardWeeklyCharacterRankBadge:SetScript("OnLeave", function()
+    GameTooltip:Hide()
+  end)
+end
 
 function LeafVE.UI:ShowAllBadgesPanel(playerName)
   if not playerName then
@@ -11408,6 +11989,29 @@ function LeafVE.UI:ShowPlayerCard(playerName)
       self.cardWorkOrderCrafterRankBadge:Show()
     else
       self.cardWorkOrderCrafterRankBadge:Hide()
+    end
+  end
+  if self.cardWeeklyCharacterRankBadge then
+    local weeklyRank, weeklyEntry = LeafVE:GetWeeklyCharacterRankInfo(playerName)
+    local weeklyRankLabel = GetWeeklyCharacterRankLabel(weeklyRank)
+    if weeklyRankLabel then
+      local wr, wg, wb = GetWeeklyCharacterRankColor(weeklyRank)
+      local anchorFrame = self.cardWorkOrderRepBadge
+      if self.cardWorkOrderCrafterRankBadge and self.cardWorkOrderCrafterRankBadge:IsShown() then
+        anchorFrame = self.cardWorkOrderCrafterRankBadge
+      end
+
+      self.cardWeeklyCharacterRankBadge:ClearAllPoints()
+      self.cardWeeklyCharacterRankBadge:SetPoint("TOP", anchorFrame, "BOTTOM", 0, -4)
+      self.cardWeeklyCharacterRankBadgeText:SetText("|cFFFFD700" .. weeklyRankLabel .. "|r")
+      if self.cardWeeklyCharacterRankBadgeIcon then
+        self.cardWeeklyCharacterRankBadgeIcon:SetTexture(PVP_RANK_ICONS[weeklyRank] or "Interface\\Icons\\INV_Misc_Horn_03")
+        self.cardWeeklyCharacterRankBadgeIcon:SetVertexColor(wr, wg, wb, 1)
+      end
+      self.cardWeeklyCharacterRankBadge:SetBackdropBorderColor(wr, wg, wb, 0.85)
+      self.cardWeeklyCharacterRankBadge:Show()
+    else
+      self.cardWeeklyCharacterRankBadge:Hide()
     end
   end
 
@@ -15824,6 +16428,14 @@ function GetWorkOrderCrafterRankLabel(rank)
   return "#" .. tostring(rank) .. " Ranked Crafter"
 end
 
+function GetWeeklyCharacterRankLabel(rank)
+  rank = tonumber(rank) or 0
+  if rank < 1 or rank > 5 then
+    return nil
+  end
+  return "#" .. tostring(rank) .. " Ranked Shinobi"
+end
+
 function GetWorkOrderCrafterRankColor(rank)
   rank = tonumber(rank) or 0
   if rank == 1 then
@@ -15838,6 +16450,10 @@ function GetWorkOrderCrafterRankColor(rank)
     return 0.76, 0.76, 0.76
   end
   return THEME.gold[1], THEME.gold[2], THEME.gold[3]
+end
+
+function GetWeeklyCharacterRankColor(rank)
+  return GetWorkOrderCrafterRankColor(rank)
 end
 
 function LeafVE:GetWorkOrderCrafterRankInfo(playerName, snapshot)
@@ -15867,6 +16483,22 @@ function LeafVE:GetWorkOrderCrafterRankInfo(playerName, snapshot)
       if visibleRank >= 5 then
         break
       end
+    end
+  end
+  return nil, nil
+end
+
+function LeafVE:GetWeeklyCharacterRankInfo(playerName, leaders)
+  playerName = ShortName(playerName)
+  if not playerName then
+    return nil, nil
+  end
+
+  leaders = leaders or self:GetWeeklyLeaderboardLeadersForWeek(WeekKey())
+  for i = 1, math.min(5, table.getn(leaders or {})) do
+    local leader = leaders[i]
+    if type(leader) == "table" and SamePlayerName(leader.name, playerName) then
+      return i, leader
     end
   end
   return nil, nil
@@ -18933,6 +19565,7 @@ function LeafVE.UI:CreateWorkOrderCrafterSignupPopup()
   })
   searchBG:SetBackdropColor(0.06, 0.06, 0.08, 0.92)
   searchBG:SetBackdropBorderColor(0.3, 0.3, 0.35, 1)
+  popup.searchBG = searchBG
 
   local searchBox = CreateFrame("EditBox", nil, searchBG)
   searchBox:SetPoint("TOPLEFT", searchBG, "TOPLEFT", 5, -4)
@@ -20965,20 +21598,35 @@ function LeafVE.UI:CreateGuildBankPopup()
   closeBtn:SetScript("OnClick", function() popup:Hide() end)
 
   local refreshBtn = CreateFrame("Button", nil, popup, "UIPanelButtonTemplate")
-  refreshBtn:SetWidth(80)
+  refreshBtn:SetWidth(88)
   refreshBtn:SetHeight(22)
   refreshBtn:SetPoint("TOPRIGHT", popup, "TOPRIGHT", -30, -24)
-  refreshBtn:SetText("Refresh")
+  refreshBtn:SetText("Refresh Meta")
   SkinButtonAccent(refreshBtn)
   refreshBtn:SetScript("OnClick", function()
-    LeafVE:RequestGuildBankOwner(true)
-    LeafVE:RequestGuildBankSnapshot(true)
-    LeafVE:RequestGuildBankItemRequestSync(true)
-    LeafVE:RequestGuildBankCategoryOverrideSync(true)
-    LeafVE:RequestGuildBankHighValueSync(true)
+    LeafVE:RequestGuildBankLightweightSync(true)
+    if popup.inventoryDisplayActive then
+      LeafVE:RequestGuildBankSnapshot(true)
+    end
     LeafVE.UI:RefreshGuildBankPopup(true)
   end)
   popup.refreshBtn = refreshBtn
+
+  local displayInventoryBtn = CreateFrame("Button", nil, popup, "UIPanelButtonTemplate")
+  displayInventoryBtn:SetWidth(112)
+  displayInventoryBtn:SetHeight(22)
+  displayInventoryBtn:SetPoint("RIGHT", refreshBtn, "LEFT", -8, 0)
+  displayInventoryBtn:SetText("Display Inventory")
+  SkinButtonAccent(displayInventoryBtn)
+  displayInventoryBtn:SetScript("OnClick", function()
+    popup.inventoryDisplayActive = true
+    popup.lastListKey = nil
+    popup.filteredItems = nil
+    popup.offset = 0
+    LeafVE:RequestGuildBankSnapshot(true)
+    LeafVE.UI:RefreshGuildBankPopup(true)
+  end)
+  popup.displayInventoryBtn = displayInventoryBtn
 
   local inventoryModeBtn = CreateWorkOrderModeButton(popup, "Inventory")
   inventoryModeBtn:SetWidth(94)
@@ -21218,16 +21866,53 @@ function LeafVE.UI:CreateGuildBankPopup()
   popup.requestRowHeight = 62
   popup.requestVisibleRows = 6
   popup.requestOffset = 0
-  popup.viewMode = "inventory"
+  popup.viewMode = "requests"
+  popup.inventoryDisplayActive = false
 
   popup:SetScript("OnShow", function()
+    this.viewMode = "requests"
+    this.inventoryDisplayActive = false
+    this.lastListKey = nil
+    this.filteredItems = nil
+    this.offset = 0
     LeafVE.UI:RefreshGuildBankPopup()
+  end)
+  popup:SetScript("OnHide", function()
+    this.viewMode = "requests"
+    this.inventoryDisplayActive = false
+    this.lastListKey = nil
+    this.filteredItems = nil
+    this.offset = 0
   end)
 
   self.guildBankPopup = popup
 end
 
 function LeafVE.UI:RefreshGuildBankInventoryView(popup, snapshot, ownerName, updatedAt, config)
+  if not popup.inventoryDisplayActive then
+    if popup.searchLabel then popup.searchLabel:Hide() end
+    if popup.searchBG then popup.searchBG:Hide() end
+    if popup.searchBox and popup.searchBox.ClearFocus then popup.searchBox:ClearFocus() end
+    if popup.scrollBar then popup.scrollBar:Hide() end
+    if popup.hintText then
+      popup.hintText:SetText("|cFFAAAAAAInventory display is disabled by default to reduce guild-wide lag. Click |cFFFFD700Display Inventory|r to load the synced bank snapshot on demand.|r")
+    end
+    if popup.itemButtons then
+      for i = 1, table.getn(popup.itemButtons) do
+        popup.itemButtons[i]:Hide()
+      end
+    end
+    if popup.noItemsText then
+      popup.noItemsText:Show()
+      popup.noItemsText:SetText("|cFF888888Inventory is hidden until you click Display Inventory.|r")
+    end
+    popup.summaryText:SetText("Inventory hidden  |  Requests stay live while inventory loading stays manual")
+    return
+  end
+
+  if popup.searchLabel then popup.searchLabel:Show() end
+  if popup.searchBG then popup.searchBG:Show() end
+  if popup.scrollBar then popup.scrollBar:Show() end
   local items = LeafVE:BuildGuildBankDisplayItems(snapshot)
   local filterText = Lower(Trim(popup.searchBox and popup.searchBox:GetText() or ""))
   local categoryMode = popup.itemCategoryMode or "normal"
@@ -21548,24 +22233,31 @@ function LeafVE.UI:RefreshGuildBankPopup(skipRequest)
   if LeafVE and LeafVE.HideGuildBankCategoryMenu then
     LeafVE:HideGuildBankCategoryMenu()
   end
+  local popup = self.guildBankPopup
   if not skipRequest then
-    LeafVE:RequestGuildBankOwner()
-    LeafVE:RequestGuildBankSnapshot()
-    LeafVE:RequestGuildBankItemRequestSync()
-    LeafVE:RequestGuildBankCategoryOverrideSync()
-    LeafVE:RequestGuildBankHighValueSync()
+    LeafVE:RequestGuildBankLightweightSync()
+    if popup.viewMode == "inventory" and popup.inventoryDisplayActive then
+      LeafVE:RequestGuildBankSnapshot()
+    end
   end
 
-  local popup = self.guildBankPopup
   local config = LeafVE:GetGuildBankConfig()
   local snapshot = LeafVE:GetGuildBankSnapshot()
   local ownerName = config.owner or LeafVE:GetGuildBankOwnerName()
   local updatedAt = tonumber(snapshot.updatedAt) or 0
   if not popup.viewMode or popup.viewMode == "" then
-    popup.viewMode = "inventory"
+    popup.viewMode = "requests"
   end
   if not popup.itemCategoryMode or popup.itemCategoryMode == "" then
     popup.itemCategoryMode = "normal"
+  end
+  if popup.displayInventoryBtn then
+    if popup.viewMode == "inventory" then
+      popup.displayInventoryBtn:SetText(popup.inventoryDisplayActive and "Refresh Inventory" or "Display Inventory")
+      popup.displayInventoryBtn:Show()
+    else
+      popup.displayInventoryBtn:Hide()
+    end
   end
 
   popup.subtitleText:SetText("Designated bank alt: " .. tostring(ownerName))
@@ -22573,6 +23265,7 @@ function LeafVE.UI:BuildGuildBankPanel(panel)
   panel.inventoryRowHeight = 72
   panel.inventoryMinVisibleRows = 6
   panel.requestRowHeight = 62
+  panel.inventoryDisplayActive = false
 
   local inventoryPane = CreateInset(panel)
   inventoryPane:SetPoint("TOPLEFT", panel, "TOPLEFT", 8, -8)
@@ -22746,22 +23439,40 @@ function LeafVE.UI:BuildGuildBankPanel(panel)
   panel.sidebarTitle = sidebarTitle
 
   local refreshBtn = CreateFrame("Button", nil, sidebarPane, "UIPanelButtonTemplate")
-  refreshBtn:SetWidth(84)
+  refreshBtn:SetWidth(88)
   refreshBtn:SetHeight(22)
   refreshBtn:SetPoint("TOPRIGHT", sidebarPane, "TOPRIGHT", -12, -10)
-  refreshBtn:SetText("Refresh")
+  refreshBtn:SetText("Refresh Meta")
   SkinButtonAccent(refreshBtn)
   refreshBtn:SetScript("OnClick", function()
-    LeafVE:RequestGuildBankOwner(true)
-    LeafVE:RequestGuildBankSnapshot(true)
-    LeafVE:RequestGuildBankItemRequestSync(true)
-    LeafVE:RequestGuildBankCategoryOverrideSync(true)
-    LeafVE:RequestGuildBankHighValueSync(true)
+    LeafVE:RequestGuildBankLightweightSync(true)
+    if panel.inventoryDisplayActive then
+      LeafVE:RequestGuildBankSnapshot(true)
+    end
     if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
       LeafVE.UI:RefreshVisibleGuildBankUI(true)
     end
   end)
   panel.refreshBtn = refreshBtn
+
+  local displayInventoryBtn = CreateFrame("Button", nil, sidebarPane, "UIPanelButtonTemplate")
+  displayInventoryBtn:SetWidth(112)
+  displayInventoryBtn:SetHeight(22)
+  displayInventoryBtn:SetPoint("RIGHT", refreshBtn, "LEFT", -8, 0)
+  displayInventoryBtn:SetText("Display Inventory")
+  SkinButtonAccent(displayInventoryBtn)
+  displayInventoryBtn:SetScript("OnClick", function()
+    panel.inventoryDisplayActive = true
+    panel.lastDisplayKey = nil
+    panel.displayRows = nil
+    panel.filteredItemCount = 0
+    panel.inventoryOffset = 0
+    LeafVE:RequestGuildBankSnapshot(true)
+    if LeafVE and LeafVE.UI and LeafVE.UI.RefreshVisibleGuildBankUI then
+      LeafVE.UI:RefreshVisibleGuildBankUI(true)
+    end
+  end)
+  panel.displayInventoryBtn = displayInventoryBtn
 
   local goldLabel = sidebarPane:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   goldLabel:SetPoint("TOPLEFT", sidebarTitle, "BOTTOMLEFT", 0, -10)
@@ -22929,9 +23640,21 @@ function LeafVE.UI:BuildGuildBankPanel(panel)
   panel.noRequestsText = noRequestsText
 
   panel:SetScript("OnShow", function()
+    this.inventoryDisplayActive = false
+    this.lastDisplayKey = nil
+    this.displayRows = nil
+    this.filteredItemCount = 0
+    this.inventoryOffset = 0
     if LeafVE and LeafVE.UI and LeafVE.UI.RefreshGuildBankPanel then
       LeafVE.UI:RefreshGuildBankPanel()
     end
+  end)
+  panel:SetScript("OnHide", function()
+    this.inventoryDisplayActive = false
+    this.lastDisplayKey = nil
+    this.displayRows = nil
+    this.filteredItemCount = 0
+    this.inventoryOffset = 0
   end)
 
   panel.built = true
@@ -23065,11 +23788,10 @@ function LeafVE.UI:RefreshGuildBankPanel(skipRequest)
   if not panel.built then return end
 
   if not skipRequest then
-    LeafVE:RequestGuildBankOwner()
-    LeafVE:RequestGuildBankSnapshot()
-    LeafVE:RequestGuildBankItemRequestSync()
-    LeafVE:RequestGuildBankCategoryOverrideSync()
-    LeafVE:RequestGuildBankHighValueSync()
+    LeafVE:RequestGuildBankLightweightSync()
+    if panel.inventoryDisplayActive then
+      LeafVE:RequestGuildBankSnapshot()
+    end
   end
 
   local config = LeafVE:GetGuildBankConfig()
@@ -23077,28 +23799,38 @@ function LeafVE.UI:RefreshGuildBankPanel(skipRequest)
   local ownerName = config.owner or LeafVE:GetGuildBankOwnerName()
   local updatedAt = tonumber(snapshot.updatedAt) or 0
   local filterText = Lower(Trim(panel.searchBox and panel.searchBox:GetText() or ""))
-  local displayKey = table.concat({
-    tostring(ownerName or ""),
-    tostring(updatedAt),
-    tostring(filterText),
-    tostring(panel.activeCategoryTab or ""),
-    tostring(LeafVE:GetGuildBankCategoryOverrideSignature()),
-    tostring(LeafVE:GetGuildBankHighValueSignature()),
-    tostring(LeafVE:GetGuildBankRequestSignature()),
-  }, "|")
-
-  local displayRows = panel.displayRows or {}
-  local filteredItemCount = tonumber(panel.filteredItemCount or 0) or 0
   local tabInfo = LeafVE:GetGuildBankPanelTabInfo(panel.activeCategoryTab)
   panel.activeCategoryTab = tabInfo and tabInfo.key or panel.activeCategoryTab
-  if panel.lastDisplayKey ~= displayKey or not panel.displayRows then
-    displayRows, filteredItemCount, filterText, tabInfo = LeafVE:BuildGuildBankPanelDisplayRows(panel, snapshot)
-    panel.displayRows = displayRows
-    panel.filteredItemCount = filteredItemCount
-    panel.lastDisplayKey = displayKey
-    panel.inventoryOffset = 0
+  local displayRows = panel.displayRows or {}
+  local filteredItemCount = tonumber(panel.filteredItemCount or 0) or 0
+  if panel.displayInventoryBtn then
+    panel.displayInventoryBtn:SetText(panel.inventoryDisplayActive and "Refresh Inventory" or "Display Inventory")
+  end
+  if panel.inventoryDisplayActive then
+    local displayKey = table.concat({
+      tostring(ownerName or ""),
+      tostring(updatedAt),
+      tostring(filterText),
+      tostring(panel.activeCategoryTab or ""),
+      tostring(LeafVE:GetGuildBankCategoryOverrideSignature()),
+      tostring(LeafVE:GetGuildBankHighValueSignature()),
+      tostring(LeafVE:GetGuildBankRequestSignature()),
+    }, "|")
+    if panel.lastDisplayKey ~= displayKey or not panel.displayRows then
+      displayRows, filteredItemCount, filterText, tabInfo = LeafVE:BuildGuildBankPanelDisplayRows(panel, snapshot)
+      panel.displayRows = displayRows
+      panel.filteredItemCount = filteredItemCount
+      panel.lastDisplayKey = displayKey
+      panel.inventoryOffset = 0
+    else
+      displayRows = panel.displayRows
+    end
   else
-    displayRows = panel.displayRows
+    panel.lastDisplayKey = nil
+    panel.displayRows = nil
+    panel.filteredItemCount = 0
+    displayRows = {}
+    filteredItemCount = 0
   end
 
   if panel.summaryText then
@@ -23176,6 +23908,33 @@ function LeafVE.UI:RefreshGuildBankPanel(skipRequest)
   for _, buttonTab in ipairs(LeafVE.guildBankPanelTabs or {}) do
     UpdateWorkOrderModeButtonVisual(panel.categoryButtons[buttonTab.key], panel.activeCategoryTab == buttonTab.key)
   end
+
+  if not panel.inventoryDisplayActive then
+    if panel.searchLabel then panel.searchLabel:Hide() end
+    if panel.searchBG then panel.searchBG:Hide() end
+    if panel.scrollBar then panel.scrollBar:Hide() end
+    if panel.hintText then
+      panel.hintText:SetText("|cFFAAAAAAInventory display is disabled by default to reduce guild-wide lag. Click |cFFFFD700Display Inventory|r when you actually need the synced bank items.|r")
+    end
+    if panel.summaryText then
+      panel.summaryText:SetText("Inventory hidden  |  Requests and bank metadata stay live without loading the full snapshot")
+    end
+    if panel.noItemsText then
+      panel.noItemsText:Show()
+      panel.noItemsText:SetText("|cFF888888Inventory is hidden until you click Display Inventory.|r")
+    end
+    if panel.inventoryRows then
+      for i = 1, table.getn(panel.inventoryRows) do
+        panel.inventoryRows[i]:Hide()
+      end
+    end
+    self:RefreshGuildBankPanelRequests(panel)
+    return
+  end
+
+  if panel.searchLabel then panel.searchLabel:Show() end
+  if panel.searchBG then panel.searchBG:Show() end
+  if panel.scrollBar then panel.scrollBar:Show() end
 
   local rowHeight = panel.inventoryRowHeight or 70
   local minVisibleRows = panel.inventoryMinVisibleRows or 6
@@ -27440,12 +28199,15 @@ function LeafVE.UI:Build()
   self.tabWorkOrderRep:SetPoint("LEFT", self.tabGuildBank, "RIGHT", 4, 0)
   self.tabWorkOrderRep:SetWidth(142)
 
+  self:BuildGroupedNavigation(f)
+
   -- Show admin tab only to Anbu, Sannin, or Hokage
   if LeafVE:IsAdminRank() then
     self.tabAdmin:Show()
   else
     self.tabAdmin:Hide()
   end
+  self:LayoutLegacyMainTabs()
   
   self.inset = CreateInset(f)
   self.inset:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -106)
@@ -27721,6 +28483,7 @@ function LeafVE.UI:Refresh()
       self.tabJoin:Show()
     end
   end
+  self:RefreshGroupedNavigation(hasAccess)
 
   if self.card then
     if hasAccess and self.activeTab ~= "raidSignups" and self.activeTab ~= "guildEvents" and self.activeTab ~= "guildBank" and self.activeTab ~= "workOrderRep" then
@@ -28380,47 +29143,56 @@ LeafVE_eventFrame:SetScript("OnEvent", function()
     -- Register badge hyperlink handler last so it wraps any other addon's hook
     LeafVE:RegisterBadgeHyperlinkHandler()
 
-    LeafVE:ScheduleDeferred("player_login_broadcast", 5, function()
-        LeafVE:ApplyGuildWipeMarkerIfNeeded()
-        if InGuild() then
-          -- Request version info from all online guild members so we can
-          -- enforce minCompatVersion when their data messages arrive.
-          LeafVE.versionResponses = {}
-          SendAddonMessage("LeafVE", "VERSIONREQ", "GUILD")
-          -- Re-announce active wipe version so late joiners/clients with
-          -- stale caches apply it even if they missed the original broadcast.
-          LeafVE:BroadcastFullWipeVersion()
-          LeafVE:BroadcastBadges()
-          LeafVE:BroadcastBadgeProgress()
-          LeafVE:BroadcastLeaderboardData()
-          
-          local bme = ShortName(UnitName("player"))
-          if bme and LeafVE_GlobalDB.playerNotes and LeafVE_GlobalDB.playerNotes[bme] then
-            LeafVE:BroadcastPlayerNote(LeafVE_GlobalDB.playerNotes[bme])
-          end
-          -- Broadcast gear so guildmates can cache it
-          LeafVE.lastGearBroadcast = 0  -- bypass throttle for login broadcast
-          LeafVE:BroadcastMyGear()
-          LeafVE.lastTalentBroadcast = 0  -- bypass throttle for login broadcast
-          LeafVE:BroadcastMyTalents(true)
-           LeafVE:BroadcastGuildBankOwner(true)
-           LeafVE:RequestGuildBankOwner(true)
-           LeafVE:RequestRaidSignupSync(true)
-           LeafVE:RequestGuildEventSync(true)
-           LeafVE:RequestWorkOrderSync(true)
-           LeafVE:RequestGuildBankSnapshot(true)
-           LeafVE:RequestGuildBankItemRequestSync(true)
-          LeafVE:RequestGuildBankCategoryOverrideSync(true)
-          LeafVE:RequestGuildBankHighValueSync(true)
-        end
+    LeafVE:ScheduleDeferred("player_login_sync_phase_1", 5, function()
+      LeafVE:ApplyGuildWipeMarkerIfNeeded()
+      if InGuild() then
+        LeafVE.versionResponses = {}
+        SendAddonMessage("LeafVE", "VERSIONREQ", "GUILD")
+        LeafVE:BroadcastFullWipeVersion()
+        LeafVE:BroadcastLeaderboardData()
+      end
     end)
-    LeafVE:ScheduleDeferred("weekly_recap_popup", 9, function()
+    LeafVE:ScheduleDeferred("player_login_sync_phase_2", 7, function()
+      if InGuild() then
+        LeafVE:BroadcastBadges()
+        LeafVE:BroadcastBadgeProgress()
+        local bme = ShortName(UnitName("player"))
+        if bme and LeafVE_GlobalDB.playerNotes and LeafVE_GlobalDB.playerNotes[bme] then
+          LeafVE:BroadcastPlayerNote(LeafVE_GlobalDB.playerNotes[bme])
+        end
+        LeafVE:RequestGuildBankOwner(true)
+      end
+    end)
+    LeafVE:ScheduleDeferred("player_login_sync_phase_3", 10, function()
+      if InGuild() then
+        LeafVE.lastGearBroadcast = 0
+        LeafVE:BroadcastMyGear()
+      end
+    end)
+    LeafVE:ScheduleDeferred("player_login_sync_phase_4", 13, function()
+      if InGuild() then
+        LeafVE.lastTalentBroadcast = 0
+        LeafVE:BroadcastMyTalents(true)
+      end
+    end)
+    LeafVE:ScheduleDeferred("player_login_sync_phase_5", 16, function()
+      if InGuild() then
+        LeafVE:RequestRaidSignupSync(true)
+        LeafVE:RequestGuildEventSync(true)
+      end
+    end)
+    LeafVE:ScheduleDeferred("player_login_sync_phase_6", 20, function()
+      if InGuild() then
+        LeafVE:RequestWorkOrderSync(true)
+      end
+    end)
+    LeafVE:ScheduleDeferred("weekly_recap_popup", 24, function()
       LeafVE:MaybeShowWeeklyRecapPopup(false)
     end)
-    LeafVE:ScheduleDeferred("work_order_login_alert_1", 12, function()
+    LeafVE:ScheduleDeferred("work_order_login_alert_1", 30, function()
       LeafVE:MaybeShowWorkOrderLoginAlert(false)
     end)
-    LeafVE:ScheduleDeferred("work_order_login_alert_2", 22, function()
+    LeafVE:ScheduleDeferred("work_order_login_alert_2", 40, function()
       LeafVE:MaybeShowWorkOrderLoginAlert(false)
     end)
     return
@@ -28559,15 +29331,12 @@ LeafVE_updateFrame:SetScript("OnUpdate", function()
     LeafVE:TrackAttendance()
   end
   
-  -- Sync badges every 5 minutes
-    if LeafVE_updateTimers.badgeSync >= 300 then
-      LeafVE_updateTimers.badgeSync = 0
-      if InGuild() then
-        LeafVE:BroadcastBadges()
-        LeafVE:BroadcastBadgeProgress()
-        LeafVE:BroadcastLeaderboardData()
-      LeafVE:BroadcastMyGear()
-      LeafVE:BroadcastMyTalents()
+  -- Keep automatic leaderboard convergence, but do not rebroadcast
+  -- unrelated badge/gear/talent data on the same 5-minute timer.
+  if LeafVE_updateTimers.badgeSync >= 300 then
+    LeafVE_updateTimers.badgeSync = 0
+    if InGuild() then
+      LeafVE:BroadcastLeaderboardData()
     end
   end
 
