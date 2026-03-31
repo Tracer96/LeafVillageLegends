@@ -34,6 +34,7 @@ local LATEST_VERSION = "14.5"
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
 local SECONDS_PER_HOUR = 3600
+local OUTDATED_VERSION_POPUP_COOLDOWN = 24 * SECONDS_PER_HOUR
 local GROUP_MIN_TIME = 300
 local GROUP_COOLDOWN = 900
 local GROUP_POINT_INTERVAL = 3600
@@ -179,6 +180,36 @@ local PVP_RANK_ICONS = {
   [3] = "Interface\\PvPRankBadges\\PvPRank12",
   [4] = "Interface\\PvPRankBadges\\PvPRank11",
   [5] = "Interface\\PvPRankBadges\\PvPRank10",
+}
+
+local TURTLE_TIMERS_RESET_ANCHOR = {
+  year = 2026,
+  month = 3,
+  day = 20,
+  hour = 0,
+  min = 0,
+  sec = 0,
+}
+
+local TURTLE_TIMBERMAW_RESET_ANCHOR = {
+  year = 2026,
+  month = 3,
+  day = 27,
+  hour = 19,
+  min = 0,
+  sec = 0,
+}
+
+local TURTLE_TIMERS_LAYOUT = {
+  left = {
+    { key = "raid40", label = "Raid 40", interval = 7 * SECONDS_PER_DAY, anchor = TURTLE_TIMERS_RESET_ANCHOR },
+    { key = "onyxia", label = "Onyxia", interval = 5 * SECONDS_PER_DAY, anchor = TURTLE_TIMERS_RESET_ANCHOR },
+    { key = "karazhan", label = "Karazhan", interval = 5 * SECONDS_PER_DAY, anchor = TURTLE_TIMERS_RESET_ANCHOR },
+  },
+  right = {
+    { key = "raid20", label = "Raid 20", interval = 3 * SECONDS_PER_DAY, anchor = TURTLE_TIMERS_RESET_ANCHOR },
+    { key = "timbermaw", label = "Timbermaw Hold", interval = 3 * SECONDS_PER_DAY, anchor = TURTLE_TIMBERMAW_RESET_ANCHOR },
+  },
 }
 
 local CLASS_ICONS = {
@@ -1142,6 +1173,65 @@ function PreviousWeekKey(ts)
   return WeekKey(currentWeekStart - 1)
 end
 
+local function GetTurtleTimersResetAnchorTS(anchorTable)
+  return time(anchorTable or TURTLE_TIMERS_RESET_ANCHOR)
+end
+
+local function GetNextIntervalResetTS(anchorTS, intervalSeconds, now)
+  anchorTS = tonumber(anchorTS) or 0
+  intervalSeconds = tonumber(intervalSeconds) or 0
+  now = tonumber(now) or Now()
+  if anchorTS <= 0 or intervalSeconds <= 0 then
+    return 0
+  end
+  if now <= anchorTS then
+    return anchorTS
+  end
+
+  local elapsed = now - anchorTS
+  local cycles = math.floor(elapsed / intervalSeconds)
+  local nextReset = anchorTS + ((cycles + 1) * intervalSeconds)
+  if nextReset <= now then
+    nextReset = nextReset + intervalSeconds
+  end
+  return nextReset
+end
+
+local function FormatCompactCountdownText(secondsRemaining)
+  secondsRemaining = math.max(0, tonumber(secondsRemaining) or 0)
+  local days = math.floor(secondsRemaining / SECONDS_PER_DAY)
+  local hours = math.floor(math.mod(secondsRemaining, SECONDS_PER_DAY) / SECONDS_PER_HOUR)
+  local minutes = math.floor(math.mod(secondsRemaining, SECONDS_PER_HOUR) / 60)
+  return string.format("%dd %dh %dm", days, hours, minutes)
+end
+
+function LeafVE:GetTurtleRaidTimerColumns(now)
+  now = tonumber(now) or Now()
+
+  local columns = {
+    left = {},
+    right = {},
+  }
+
+  for columnKey, entries in pairs(TURTLE_TIMERS_LAYOUT or {}) do
+    for i = 1, table.getn(entries or {}) do
+      local entry = entries[i]
+      local anchorTS = GetTurtleTimersResetAnchorTS(entry and entry.anchor or nil)
+      local countdownText = "|cFF888888Unavailable|r"
+      if anchorTS and anchorTS > 0 then
+        local nextResetTS = GetNextIntervalResetTS(anchorTS, entry.interval, now)
+        countdownText = "|cFFFFD700" .. FormatCompactCountdownText(nextResetTS - now) .. "|r"
+      end
+      table.insert(
+        columns[columnKey],
+        string.format("|cFF2DD35C%s|r  %s", tostring(entry and entry.label or "Timer"), countdownText)
+      )
+    end
+  end
+
+  return columns
+end
+
 function WeekStartTSFromKey(wk)
   wk = tostring(wk or "")
   if string.len(wk) ~= 8 then
@@ -1348,6 +1438,11 @@ local function EnsureDB()
   if not LeafVE_DB.groupPointsToday then LeafVE_DB.groupPointsToday = {} end
   if LeafVE_DB.lastLogoutAt == nil then LeafVE_DB.lastLogoutAt = 0 end
   if LeafVE_DB.workOrderLoginAlertAt == nil then LeafVE_DB.workOrderLoginAlertAt = 0 end
+  if LeafVE_DB.lastOutdatedVersionPopupAt == nil then LeafVE_DB.lastOutdatedVersionPopupAt = 0 end
+  if LeafVE_DB.latestKnownAddonVersion == nil or LeafVE_DB.latestKnownAddonVersion == "" then
+    LeafVE_DB.latestKnownAddonVersion = LATEST_VERSION
+  end
+  if LeafVE_DB.latestKnownAddonVersionSource == nil then LeafVE_DB.latestKnownAddonVersionSource = "" end
   if not LeafVE_DB.workOrderFinalRewardDaily then LeafVE_DB.workOrderFinalRewardDaily = {} end
   if not LeafVE_DB.workOrderFinalRewardClaims then LeafVE_DB.workOrderFinalRewardClaims = {} end
   if not LeafVE_DB.workOrderFinalRewardCarry then LeafVE_DB.workOrderFinalRewardCarry = {} end
@@ -8190,6 +8285,64 @@ local function VersionLessThan(a, b)
   return amin < bmin
 end
 
+function LeafVE:GetLatestKnownAddonVersion()
+  EnsureDB()
+  local latest = tostring(LATEST_VERSION or LeafVE.version or "0.0")
+  local stored = tostring(LeafVE_DB.latestKnownAddonVersion or "")
+  if stored ~= "" and VersionLessThan(latest, stored) then
+    latest = stored
+  end
+  return latest
+end
+
+function LeafVE:RecordKnownAddonVersion(ver, sourceName)
+  EnsureDB()
+  local versionText = Trim(ver or "")
+  if versionText == "" then
+    return false
+  end
+
+  local latest = self:GetLatestKnownAddonVersion()
+  if VersionLessThan(latest, versionText) then
+    LeafVE_DB.latestKnownAddonVersion = versionText
+    LeafVE_DB.latestKnownAddonVersionSource = ShortName(sourceName) or Trim(sourceName or "")
+    return true
+  end
+  return false
+end
+
+function LeafVE:MaybeShowOutdatedVersionPopup(force)
+  EnsureDB()
+  local latestKnownVersion = self:GetLatestKnownAddonVersion()
+  if not VersionLessThan(LeafVE.version, latestKnownVersion) then
+    return false
+  end
+
+  local now = Now()
+  local lastShownAt = tonumber(LeafVE_DB.lastOutdatedVersionPopupAt) or 0
+  if not force and lastShownAt > 0 and (now - lastShownAt) < OUTDATED_VERSION_POPUP_COOLDOWN then
+    return false
+  end
+
+  LeafVE_DB.lastOutdatedVersionPopupAt = now
+  local sourceText = Trim(LeafVE_DB.latestKnownAddonVersionSource or "")
+  local lines = {
+    "|cFFFF4444Leaf Village Legends Update Required|r",
+    "",
+    "|cFFFFD700Your addon is out of date and may miss newer features or sync changes.|r",
+    "",
+    "|cFF888888Current version:|r " .. tostring(LeafVE.version),
+    "|cFF888888Latest known version:|r " .. tostring(latestKnownVersion),
+  }
+  if sourceText ~= "" then
+    table.insert(lines, "|cFF888888Seen from guildmate:|r " .. tostring(sourceText))
+  end
+  table.insert(lines, "")
+  table.insert(lines, "|cFF2DD35CPlease update to the latest version.|r")
+  self:ShowInfoPopup(table.concat(lines, "\n"))
+  return true
+end
+
 -- Returns true when the sender is known to be compatible.
 -- Unknown versions are accepted so live updates are not dropped while the
 -- VERSIONREQ/VERSIONRSP handshake is still in flight.
@@ -8222,6 +8375,7 @@ function LeafVE:OnAddonMessage(prefix, message, channel, sender)
     local ver = string.sub(message, 12)
     if not LeafVE.versionResponses then LeafVE.versionResponses = {} end
     LeafVE.versionResponses[sender] = ver
+    LeafVE:RecordKnownAddonVersion(ver, sender)
     -- Auto-nag if someone has a higher version than us
     local myVer = LeafVE.version
     if not LeafVE.shownVersionNag and VersionLessThan(myVer, ver) then
@@ -24541,6 +24695,41 @@ function BuildMyPanel(panel)
   weekCountdown:ClearAllPoints()
   weekCountdown:SetPoint("TOPLEFT", weekCountdownLabel, "BOTTOMLEFT", 0, -5)
 
+  local raidTimersLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+  raidTimersLabel:SetPoint("TOPLEFT", seasonRewards, "BOTTOMLEFT", 0, -15)
+  raidTimersLabel:SetText("|cFF2DD35CRaid Reset Timers|r")
+
+  panel.raidTimerLeftEntries = {}
+  panel.raidTimerRightEntries = {}
+
+  local previousLeft = nil
+  local previousRight = nil
+  for i = 1, 3 do
+    local leftEntry = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    if not previousLeft then
+      leftEntry:SetPoint("TOPLEFT", raidTimersLabel, "BOTTOMLEFT", 0, -12)
+    else
+      leftEntry:SetPoint("TOPLEFT", previousLeft, "BOTTOMLEFT", 0, -4)
+    end
+    leftEntry:SetWidth(185)
+    leftEntry:SetJustifyH("LEFT")
+    leftEntry:SetText("Loading...")
+    panel.raidTimerLeftEntries[i] = leftEntry
+    previousLeft = leftEntry
+
+    local rightEntry = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    if not previousRight then
+      rightEntry:SetPoint("TOPLEFT", leftEntry, "TOPRIGHT", 70, 0)
+    else
+      rightEntry:SetPoint("TOPLEFT", previousRight, "BOTTOMLEFT", 0, -4)
+    end
+    rightEntry:SetWidth(185)
+    rightEntry:SetJustifyH("LEFT")
+    rightEntry:SetText("Loading...")
+    panel.raidTimerRightEntries[i] = rightEntry
+    previousRight = rightEntry
+  end
+
 local legend = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   legend:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 12, 12)
   legend:SetWidth(maxWidth)
@@ -28666,6 +28855,34 @@ function LeafVE.UI:Refresh()
     end
    end
 
+    if self.panels.me.raidTimerLeftEntries or self.panels.me.raidTimerRightEntries then
+      local timerColumns = LeafVE:GetTurtleRaidTimerColumns(Now())
+      for i = 1, table.getn(self.panels.me.raidTimerLeftEntries or {}) do
+        local entry = self.panels.me.raidTimerLeftEntries[i]
+        if entry then
+          local text = timerColumns.left and timerColumns.left[i]
+          if text and text ~= "" then
+            entry:SetText(text)
+            entry:Show()
+          else
+            entry:Hide()
+          end
+        end
+      end
+      for i = 1, table.getn(self.panels.me.raidTimerRightEntries or {}) do
+        local entry = self.panels.me.raidTimerRightEntries[i]
+        if entry then
+          local text = timerColumns.right and timerColumns.right[i]
+          if text and text ~= "" then
+            entry:SetText(text)
+            entry:Show()
+          else
+            entry:Hide()
+          end
+        end
+      end
+    end
+
     -- Populate current weekly top 5 standings
     if self.panels.me.weekTopEntries then
       local wk = WeekKey()
@@ -29151,6 +29368,9 @@ LeafVE_eventFrame:SetScript("OnEvent", function()
         LeafVE:BroadcastFullWipeVersion()
         LeafVE:BroadcastLeaderboardData()
       end
+    end)
+    LeafVE:ScheduleDeferred("player_login_version_popup", 11, function()
+      LeafVE:MaybeShowOutdatedVersionPopup(false)
     end)
     LeafVE:ScheduleDeferred("player_login_sync_phase_2", 7, function()
       if InGuild() then
