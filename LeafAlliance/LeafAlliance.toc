@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: Leaf Alliance
+## Notes: Lightweight alliance channel and guild roster sync
+## Author: Codex
+## Version: 1.0.0
+## SavedVariables: LeafAllianceDB
+
+LeafAlliance.lua

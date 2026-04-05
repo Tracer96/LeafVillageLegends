@@ -21,15 +21,17 @@ end
 LeafVE = LeafVE or {}
 LeafVE.name = "LeafVillageLegends"
 LeafVE.prefix = "LeafVE"
-LeafVE.version = "14.5"
+LeafVE.version = "15.0"
 LeafVE.guildBankOwner = "Methllyy"
+LeafVE.guildBankEnabled = false
+LeafVE.raidSignupsEnabled = false
 -- Minimum peer version whose synced data is accepted.  Bump this whenever a
 -- version introduces a breaking data-format change so that older clients
 -- cannot corrupt the shared leaderboard / badge data.
 LeafVE.minCompatVersion = "14.3"
 
 -- The latest published version; used to detect when the running addon is outdated.
-local LATEST_VERSION = "14.5"
+local LATEST_VERSION = "15.0"
 
 local SEP = "\31"
 local SECONDS_PER_DAY = 86400
@@ -56,6 +58,38 @@ local GEAR_CAPTURE_CACHE_WINDOW = 5 -- seconds before we rescan unchanged gear/s
 local GEAR_REQUEST_THROTTLE = 8     -- seconds between re-requesting remote gear for the same player
 local GEAR_EVENT_DEBOUNCE = 0.2     -- coalesce bursts of inventory events into one gear refresh
 local GUILD_BANK_REFRESH_DEBOUNCE = 0.2 -- coalesce bag/money bursts into one snapshot refresh
+LeafVE.allianceChat = {
+  name = "Leaf",
+  password = "Leafbiz",
+  label = "Alliance",
+  color = { 1.00, 0.82, 0.05 },
+  prefixColor = "|cFF73C8FF",
+  messageColor = "|cFFFFD10D",
+}
+
+local function PurgeDisabledFeatureData()
+  if not LeafVE_DB then LeafVE_DB = {} end
+  if not LeafVE_GlobalDB then LeafVE_GlobalDB = {} end
+
+  if LeafVE.raidSignupsEnabled ~= true then
+    LeafVE_GlobalDB.raidEvents = nil
+    LeafVE_GlobalDB.raidSignups = nil
+    if LeafVE_DB.ui and LeafVE_DB.ui.activeTab == "raidSignups" then
+      LeafVE_DB.ui.activeTab = "guildEvents"
+    end
+  end
+
+  if LeafVE.guildBankEnabled ~= true then
+    LeafVE_GlobalDB.guildBankConfig = nil
+    LeafVE_GlobalDB.guildBankCache = nil
+    LeafVE_GlobalDB.guildBankRequests = nil
+    LeafVE_GlobalDB.guildBankHighValueItems = nil
+    LeafVE_GlobalDB.guildBankCategoryOverrides = nil
+    if LeafVE_DB.ui and LeafVE_DB.ui.activeTab == "guildBank" then
+      LeafVE_DB.ui.activeTab = "workOrderRep"
+    end
+  end
+end
 local GEAR_SLOT_NAMES = {
   "HeadSlot", "NeckSlot", "ShoulderSlot", "BackSlot", "ChestSlot",
   "ShirtSlot", "TabardSlot", "WristSlot", "HandsSlot", "WaistSlot",
@@ -1406,6 +1440,7 @@ end
 
 local function EnsureDB()
   if not LeafVE_DB then LeafVE_DB = {} end
+  PurgeDisabledFeatureData()
   -- Detect version upgrade and notify the player once per session.
   if LeafVE_DB.addonVersion ~= LeafVE.version then
     if LeafVE_DB.addonVersion then
@@ -1476,6 +1511,7 @@ local function EnsureDB()
   if LeafVE_DB.options.enablePointNotifications == nil then LeafVE_DB.options.enablePointNotifications = true end
   if LeafVE_DB.options.enableBadgeNotifications == nil then LeafVE_DB.options.enableBadgeNotifications = true end
   if LeafVE_DB.options.enableWorkOrderChatMessages == nil then LeafVE_DB.options.enableWorkOrderChatMessages = true end
+  if LeafVE_DB.options.allianceAutoJoin == nil then LeafVE_DB.options.allianceAutoJoin = true end
   if LeafVE_DB.options.enableWorkOrderLoginAlerts == nil then LeafVE_DB.options.enableWorkOrderLoginAlerts = true end
   if LeafVE_DB.options.bossPoints == nil then LeafVE_DB.options.bossPoints = INSTANCE_BOSS_POINTS end
   if LeafVE_DB.options.instanceCompletionPoints == nil then LeafVE_DB.options.instanceCompletionPoints = INSTANCE_COMPLETION_POINTS end
@@ -1504,15 +1540,28 @@ local function EnsureDB()
   if not LeafVE_GlobalDB.workOrderCrafterSignups then LeafVE_GlobalDB.workOrderCrafterSignups = {} end
   if not LeafVE_GlobalDB.workOrderCrafterSignupMeta then LeafVE_GlobalDB.workOrderCrafterSignupMeta = {} end
   if not LeafVE_GlobalDB.workOrderIdentityLinks then LeafVE_GlobalDB.workOrderIdentityLinks = {} end
-  if not LeafVE_GlobalDB.guildBankConfig then LeafVE_GlobalDB.guildBankConfig = { owner = LeafVE.guildBankOwner, updatedAt = 0, updatedBy = "" } end
-  if not LeafVE_GlobalDB.guildBankCache then LeafVE_GlobalDB.guildBankCache = { owner = LeafVE.guildBankOwner, updatedAt = 0, counts = {}, goldCopper = 0 } end
-  if not LeafVE_GlobalDB.guildBankRequests then LeafVE_GlobalDB.guildBankRequests = {} end
-  if not LeafVE_GlobalDB.guildBankHighValueItems then LeafVE_GlobalDB.guildBankHighValueItems = {} end
-  if not LeafVE_GlobalDB.guildBankCategoryOverrides then LeafVE_GlobalDB.guildBankCategoryOverrides = {} end
+  if LeafVE.guildBankEnabled == true then
+    if not LeafVE_GlobalDB.guildBankConfig then LeafVE_GlobalDB.guildBankConfig = { owner = LeafVE.guildBankOwner, updatedAt = 0, updatedBy = "" } end
+    if not LeafVE_GlobalDB.guildBankCache then LeafVE_GlobalDB.guildBankCache = { owner = LeafVE.guildBankOwner, updatedAt = 0, counts = {}, goldCopper = 0 } end
+    if not LeafVE_GlobalDB.guildBankRequests then LeafVE_GlobalDB.guildBankRequests = {} end
+    if not LeafVE_GlobalDB.guildBankHighValueItems then LeafVE_GlobalDB.guildBankHighValueItems = {} end
+    if not LeafVE_GlobalDB.guildBankCategoryOverrides then LeafVE_GlobalDB.guildBankCategoryOverrides = {} end
+  else
+    LeafVE_GlobalDB.guildBankConfig = nil
+    LeafVE_GlobalDB.guildBankCache = nil
+    LeafVE_GlobalDB.guildBankRequests = nil
+    LeafVE_GlobalDB.guildBankHighValueItems = nil
+    LeafVE_GlobalDB.guildBankCategoryOverrides = nil
+  end
   if not LeafVE_GlobalDB.guildEvents then LeafVE_GlobalDB.guildEvents = {} end
   if not LeafVE_GlobalDB.guildEventRSVPs then LeafVE_GlobalDB.guildEventRSVPs = {} end
-  if not LeafVE_GlobalDB.raidEvents then LeafVE_GlobalDB.raidEvents = {} end
-  if not LeafVE_GlobalDB.raidSignups then LeafVE_GlobalDB.raidSignups = {} end
+  if LeafVE.raidSignupsEnabled == true then
+    if not LeafVE_GlobalDB.raidEvents then LeafVE_GlobalDB.raidEvents = {} end
+    if not LeafVE_GlobalDB.raidSignups then LeafVE_GlobalDB.raidSignups = {} end
+  else
+    LeafVE_GlobalDB.raidEvents = nil
+    LeafVE_GlobalDB.raidSignups = nil
+  end
   if not LeafVE_GlobalDB.fullWipeVersion then LeafVE_GlobalDB.fullWipeVersion = 0 end
   if not LeafVE_DB.badgesArchive then LeafVE_DB.badgesArchive = {} end
   -- Badge bucket follows full-wipe version so manual resets start a fresh badge season.
@@ -1567,6 +1616,401 @@ local function SamePlayerName(a, b)
   local bn = ShortName(b)
   if not an or not bn then return false end
   return Lower(an) == Lower(bn)
+end
+
+function LeafVE:GetAllianceChannelName()
+  return LeafVE.allianceChat.name
+end
+
+function LeafVE:GetAllianceChannelPassword()
+  return LeafVE.allianceChat.password
+end
+
+function LeafVE:GetAllianceDisplayLabel()
+  return LeafVE.allianceChat.label
+end
+
+function LeafVE:GetAllianceChannelId()
+  local channelId = 0
+  if type(GetChannelName) == "function" then
+    local lookupId = GetChannelName(self:GetAllianceChannelName())
+    channelId = tonumber(lookupId) or 0
+  end
+  if channelId > 0 then
+    self.allianceChannelId = channelId
+  end
+  return channelId
+end
+
+function LeafVE:IsAllianceMessageChannel(channelString, channelName, channelNumber)
+  local desiredName = Lower(self:GetAllianceChannelName())
+  local normalizedString = Lower(Trim(channelString or ""))
+  local normalizedName = Lower(Trim(channelName or ""))
+  local activeChannelId = self:GetAllianceChannelId()
+
+  if normalizedName ~= "" then
+    if normalizedName == desiredName then
+      return true
+    end
+    if string.find(normalizedName, desiredName, 1, true) then
+      return true
+    end
+  end
+
+  if normalizedString ~= "" and string.find(normalizedString, desiredName, 1, true) then
+    return true
+  end
+
+  if activeChannelId > 0 and tonumber(channelNumber) == activeChannelId then
+    return true
+  end
+
+  return false
+end
+
+function LeafVE:IsAllianceOutgoingChannel(channelTarget)
+  local activeChannelId = self:GetAllianceChannelId()
+  local desiredName = Lower(self:GetAllianceChannelName())
+  local normalizedTarget = Lower(Trim(tostring(channelTarget or "")))
+
+  if normalizedTarget == "" then
+    return false
+  end
+  if normalizedTarget == desiredName then
+    return true
+  end
+  if string.find(normalizedTarget, desiredName, 1, true) then
+    return true
+  end
+  if activeChannelId > 0 and tonumber(channelTarget) == activeChannelId then
+    return true
+  end
+
+  return false
+end
+
+function LeafVE:BuildAllianceOutgoingPrefix()
+  return LeafVE.allianceChat.prefixColor .. "[" .. self:GetAllianceDisplayLabel() .. "]|r " .. LeafVE.allianceChat.messageColor
+end
+
+function LeafVE:StripAllianceChatDecorators(message)
+  local text = tostring(message or "")
+  local prefix = self:BuildAllianceOutgoingPrefix()
+
+  if string.sub(text, 1, string.len(prefix)) == prefix then
+    text = string.sub(text, string.len(prefix) + 1)
+    if string.sub(text, -2) == "|r" then
+      text = string.sub(text, 1, -3)
+    end
+  end
+
+  text = string.gsub(text, "^%[" .. EscapePattern(self:GetAllianceDisplayLabel()) .. "%]%s*", "")
+  return text
+end
+
+function LeafVE:BuildAllianceFormattedLine(author, message)
+  local displayAuthor = ShortName(author) or Trim(author or "")
+  local displayMessage = self:StripAllianceChatDecorators(message)
+
+  if displayAuthor == nil or displayAuthor == "" then
+    displayAuthor = "Unknown"
+  end
+
+  return displayAuthor .. " " .. self:BuildAllianceOutgoingPrefix() .. displayMessage .. "|r"
+end
+
+function LeafVE:ShouldSuppressAllianceSystemMessage(message)
+  local text = Lower(Trim(message or ""))
+  local desiredName = Lower(self:GetAllianceChannelName())
+
+  if text == "" or desiredName == "" then
+    return false
+  end
+  if string.find(text, desiredName, 1, true) == nil then
+    return false
+  end
+
+  return string.find(text, "owner changed to", 1, true) ~= nil
+    or string.find(text, "changed owner to", 1, true) ~= nil
+    or string.find(text, "joined channel", 1, true) ~= nil
+    or string.find(text, "left channel", 1, true) ~= nil
+end
+
+function LeafVE:HandleAllianceChatFrameMessage(chatFrame, eventName, message, author, languageName, channelString, target, flags, unknown1, channelNumber, channelName, unknown2, counter)
+  if eventName == "CHAT_MSG_CHANNEL_NOTICE" or eventName == "CHAT_MSG_CHANNEL_NOTICE_USER" then
+    if self:ShouldSuppressAllianceSystemMessage(message) then
+      return true
+    end
+  end
+
+  if eventName == "CHAT_MSG_SYSTEM" and self:ShouldSuppressAllianceSystemMessage(message) then
+    return true
+  end
+
+  if eventName == "CHAT_MSG_CHANNEL" and self:IsAllianceMessageChannel(channelString, channelName, channelNumber) then
+    local formatted = self:BuildAllianceFormattedLine(author, message)
+    if chatFrame and chatFrame.AddMessage then
+      chatFrame:AddMessage(formatted)
+    elseif DEFAULT_CHAT_FRAME and DEFAULT_CHAT_FRAME.AddMessage then
+      DEFAULT_CHAT_FRAME:AddMessage(formatted)
+    end
+    return true
+  end
+
+  return false
+end
+
+function LeafVE:InstallAllianceChatHandler()
+  if self.allianceChatHandlerInstalled and ChatFrame_MessageEventHandler == self.wrappedAllianceMessageEventHandler then
+    return
+  end
+  if type(ChatFrame_MessageEventHandler) ~= "function" then
+    return
+  end
+
+  self.allianceChatHandlerInstalled = true
+  self.originalAllianceMessageEventHandler = ChatFrame_MessageEventHandler
+  self.wrappedAllianceMessageEventHandler = function(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13)
+    local chatFrame
+    local eventName
+    local message
+    local author
+    local languageName
+    local channelString
+    local target
+    local flags
+    local unknown1
+    local channelNumber
+    local channelName
+    local unknown2
+    local counter
+
+    if type(a1) == "table" and a1.AddMessage then
+      chatFrame = a1
+      eventName = a2
+      message = a3
+      author = a4
+      languageName = a5
+      channelString = a6
+      target = a7
+      flags = a8
+      unknown1 = a9
+      channelNumber = a10
+      channelName = a11
+      unknown2 = a12
+      counter = a13
+    else
+      chatFrame = (type(this) == "table" and this.AddMessage and this) or DEFAULT_CHAT_FRAME
+      eventName = a1
+      message = a2
+      author = a3
+      languageName = a4
+      channelString = a5
+      target = a6
+      flags = a7
+      unknown1 = a8
+      channelNumber = a9
+      channelName = a10
+      unknown2 = a11
+      counter = a12
+    end
+
+    if LeafVE and LeafVE.HandleAllianceChatFrameMessage then
+      local ok, handled = pcall(
+        LeafVE.HandleAllianceChatFrameMessage,
+        LeafVE,
+        chatFrame,
+        eventName,
+        message,
+        author,
+        languageName,
+        channelString,
+        target,
+        flags,
+        unknown1,
+        channelNumber,
+        channelName,
+        unknown2,
+        counter
+      )
+      if ok and handled then
+        return
+      end
+      if not ok then
+        Print("Alliance chat handler error: " .. tostring(handled))
+      end
+    end
+
+    return LeafVE.originalAllianceMessageEventHandler(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13)
+  end
+
+  ChatFrame_MessageEventHandler = self.wrappedAllianceMessageEventHandler
+end
+
+function LeafVE:InstallAllianceSendHook()
+  if self.allianceSendHookInstalled and SendChatMessage == self.wrappedAllianceSendChatMessage then
+    return
+  end
+  if type(SendChatMessage) ~= "function" then
+    return
+  end
+
+  self.allianceSendHookInstalled = true
+  self.originalAllianceSendChatMessage = SendChatMessage
+  self.wrappedAllianceSendChatMessage = function(msg, chatType, language, channel)
+    local outgoing = msg
+    if LeafVE and chatType == "CHANNEL" and type(msg) == "string" and msg ~= "" and string.sub(msg, 1, 1) ~= "/" then
+      if LeafVE:IsAllianceOutgoingChannel(channel) then
+        outgoing = LeafVE:BuildAllianceOutgoingPrefix() .. LeafVE:StripAllianceChatDecorators(msg) .. "|r"
+      end
+    end
+    return LeafVE.originalAllianceSendChatMessage(outgoing, chatType, language, channel)
+  end
+
+  SendChatMessage = self.wrappedAllianceSendChatMessage
+end
+
+function LeafVE:InstallAllianceChatSupport()
+  self:InstallAllianceSendHook()
+end
+
+function LeafVE:ApplyAllianceChannelColor(channelId)
+  channelId = tonumber(channelId) or self:GetAllianceChannelId()
+  if channelId <= 0 then
+    return false
+  end
+
+  local channelKey = "CHANNEL" .. tostring(channelId)
+  local color = LeafVE.allianceChat.color
+
+  if ChatTypeInfo and ChatTypeInfo[channelKey] then
+    ChatTypeInfo[channelKey].r = color[1]
+    ChatTypeInfo[channelKey].g = color[2]
+    ChatTypeInfo[channelKey].b = color[3]
+  end
+
+  if type(ChangeChatColor) == "function" then
+    pcall(ChangeChatColor, channelKey, color[1], color[2], color[3])
+  end
+  if type(ChangeChatColorByID) == "function" then
+    pcall(ChangeChatColorByID, channelId, color[1], color[2], color[3])
+  end
+
+  return true
+end
+
+function LeafVE:EnsureAllianceChannelVisible(channelName)
+  channelName = channelName or self:GetAllianceChannelName()
+  if type(ChatFrame_AddChannel) == "function" then
+    if DEFAULT_CHAT_FRAME then
+      pcall(ChatFrame_AddChannel, DEFAULT_CHAT_FRAME, channelName)
+    end
+    if SELECTED_CHAT_FRAME and SELECTED_CHAT_FRAME ~= DEFAULT_CHAT_FRAME then
+      pcall(ChatFrame_AddChannel, SELECTED_CHAT_FRAME, channelName)
+    end
+  end
+end
+
+function LeafVE:OpenAllianceChatInput()
+  local channelId = self:GetAllianceChannelId()
+  if channelId <= 0 then
+    return false
+  end
+  if type(ChatFrame_OpenChat) == "function" then
+    ChatFrame_OpenChat("/" .. tostring(channelId) .. " ")
+    return true
+  end
+  return false
+end
+
+function LeafVE:FinalizeAllianceChannelJoin(channelId, announce, openInput)
+  channelId = tonumber(channelId) or self:GetAllianceChannelId()
+  if channelId <= 0 then
+    return false
+  end
+
+  self.allianceChannelId = channelId
+  self.lastAllianceAutoJoinAttemptAt = Now()
+  self:EnsureAllianceChannelVisible(self:GetAllianceChannelName())
+  self:ApplyAllianceChannelColor(channelId)
+  self:InstallAllianceChatSupport()
+
+  if announce then
+    Print("Joined alliance chat: [" .. self:GetAllianceChannelName() .. "]")
+  end
+
+  if openInput then
+    self:OpenAllianceChatInput()
+  end
+
+  return true
+end
+
+function LeafVE:JoinAllianceChannel(openInput, announce)
+  EnsureDB()
+  self:InstallAllianceChatSupport()
+
+  local channelName = self:GetAllianceChannelName()
+  local channelId = self:GetAllianceChannelId()
+  if channelId > 0 then
+    return self:FinalizeAllianceChannelJoin(channelId, announce, openInput)
+  end
+
+  if type(JoinChannelByName) ~= "function" then
+    return false
+  end
+
+  JoinChannelByName(channelName, self:GetAllianceChannelPassword() ~= "" and self:GetAllianceChannelPassword() or nil)
+
+  self.pendingAllianceOpenInput = openInput and true or false
+  self.pendingAllianceAnnounceJoin = announce and true or false
+
+  if announce then
+    Print("Joining alliance chat [" .. channelName .. "]...")
+  end
+
+  self:ScheduleDeferred("leafve_alliance_join_retry", 0.7, function()
+    local retryChannelId = LeafVE:GetAllianceChannelId()
+    local shouldOpenInput = LeafVE.pendingAllianceOpenInput and true or false
+    local shouldAnnounce = LeafVE.pendingAllianceAnnounceJoin and true or false
+    LeafVE.pendingAllianceOpenInput = nil
+    LeafVE.pendingAllianceAnnounceJoin = nil
+
+    if retryChannelId > 0 then
+      LeafVE:FinalizeAllianceChannelJoin(retryChannelId, shouldAnnounce, shouldOpenInput)
+    elseif shouldAnnounce then
+      Print("Unable to join alliance chat [" .. channelName .. "].")
+    end
+  end)
+
+  return true
+end
+
+function LeafVE:MaybeAutoJoinAlliance(force)
+  EnsureDB()
+
+  if LeafVE_DB.options.allianceAutoJoin ~= true then
+    return false
+  end
+
+  local guildName = GetGuildInfo and GetGuildInfo("player") or nil
+  if Trim(guildName or "") == "" then
+    return false
+  end
+
+  local now = Now()
+  local channelId = self:GetAllianceChannelId()
+  if channelId > 0 then
+    self.allianceChannelId = channelId
+    self.lastAllianceAutoJoinAttemptAt = now
+    self:EnsureAllianceChannelVisible(self:GetAllianceChannelName())
+    self:ApplyAllianceChannelColor(channelId)
+    self:InstallAllianceChatSupport()
+    return true
+  end
+
+  self.lastAllianceAutoJoinAttemptAt = now
+  return self:JoinAllianceChannel(false, false)
 end
 
 local function CurrentWipeVersion()
@@ -10511,7 +10955,6 @@ function LeafVE.UI:LayoutLegacyMainTabs()
     {btn = self.tabLeaderLife, width = 65},
     {btn = self.tabAchievements, width = 95},
     {btn = self.tabShoutouts, width = 80},
-    {btn = self.tabRaidSignups, width = 92},
     {btn = self.tabGuildEvents, width = 88},
     {btn = self.tabHistory, width = 60},
     {btn = self.tabLiveHistory, width = 80},
@@ -10541,21 +10984,13 @@ function LeafVE.UI:LayoutLegacyMainTabs()
     self.tabAdmin:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
   end
 
-  if self.tabGuildBank then
-    self.tabGuildBank:ClearAllPoints()
-    self.tabGuildBank:SetWidth(78)
-    if self.tabAdmin and self.tabAdmin:IsShown() then
-      self.tabGuildBank:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
-    else
-      self.tabGuildBank:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
-    end
-  end
-
   if self.tabWorkOrderRep then
     self.tabWorkOrderRep:ClearAllPoints()
     self.tabWorkOrderRep:SetWidth(142)
-    if self.tabGuildBank then
-      self.tabWorkOrderRep:SetPoint("LEFT", self.tabGuildBank, "RIGHT", 4, 0)
+    if self.tabAdmin and self.tabAdmin:IsShown() then
+      self.tabWorkOrderRep:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
+    else
+      self.tabWorkOrderRep:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
     end
   end
 
@@ -10594,19 +11029,9 @@ local LEAFVE_GROUPED_NAV = {
     key = "calendar",
     label = "Calendar",
     width = 82,
-    defaultTab = "raidSignups",
+    defaultTab = "guildEvents",
     subtabs = {
-      {tab = "raidSignups", label = "Raid Sign-Ups", width = 96},
       {tab = "guildEvents", label = "Guild Events", width = 92},
-    },
-  },
-  {
-    key = "bank",
-    label = "Bank",
-    width = 64,
-    defaultTab = "guildBank",
-    subtabs = {
-      {tab = "guildBank", label = "Guild Bank", width = 82},
     },
   },
   {
@@ -10642,9 +11067,7 @@ local LEAFVE_GROUPED_TAB_TO_CATEGORY = {
   badges = "character",
   roster = "character",
   shoutouts = "character",
-  raidSignups = "calendar",
   guildEvents = "calendar",
-  guildBank = "bank",
   workOrderRep = "orders",
   options = "options",
   history = "options",
@@ -10685,9 +11108,9 @@ end
 function LeafVE.UI:HideLegacyMainTabs()
   local legacyTabs = {
     self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife,
-    self.tabAchievements, self.tabShoutouts, self.tabRaidSignups, self.tabGuildEvents,
+    self.tabAchievements, self.tabShoutouts, self.tabGuildEvents,
     self.tabHistory, self.tabLiveHistory, self.tabBadges, self.tabOptions,
-    self.tabAdmin, self.tabGuildBank, self.tabWorkOrderRep,
+    self.tabAdmin, self.tabWorkOrderRep,
   }
   for i = 1, table.getn(legacyTabs) do
     if legacyTabs[i] then
@@ -10739,8 +11162,7 @@ function LeafVE.UI:BuildGroupedNavigation(parent)
   self.navLastTabByCategory = {
     welcome = "welcome",
     character = "me",
-    calendar = "raidSignups",
-    bank = "guildBank",
+    calendar = "guildEvents",
     orders = "workOrderRep",
     options = "options",
   }
@@ -11288,49 +11710,11 @@ end)
   end)
   self.cardProfessionBtn = professionBtn
 
-  local guildBankBtn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
-  guildBankBtn:SetWidth(cardButtonMiddleWidth)
-  guildBankBtn:SetHeight(cardButtonHeight)
-  guildBankBtn:SetPoint("LEFT", professionBtn, "RIGHT", 16, 0)
-  guildBankBtn:SetText("Guild Bank")
-  if guildBankBtn.GetFontString and guildBankBtn:GetFontString() and guildBankBtn:GetFontString().SetFont then
-    guildBankBtn:GetFontString():SetFont(STANDARD_TEXT_FONT, cardButtonFontSize, "")
-  end
-  SkinButtonAccent(guildBankBtn)
-  SetLeafButtonTextColor(guildBankBtn, THEME.gold[1], THEME.gold[2], THEME.gold[3], 1, 0.96, 0.7)
-  guildBankBtn:SetScript("OnClick", function()
-    if LeafVE.UI.allBadgesFrame and LeafVE.UI.allBadgesFrame:IsVisible() then
-      LeafVE.UI.allBadgesFrame:Hide()
-    end
-    if LeafVE.UI.achPopup and LeafVE.UI.achPopup:IsVisible() then
-      LeafVE.UI.achPopup:Hide()
-    end
-    if LeafVE.UI.gearPopup and LeafVE.UI.gearPopup:IsVisible() then
-      LeafVE.UI.gearPopup:Hide()
-    end
-    if LeafVE.UI.workOrderPopup and LeafVE.UI.workOrderPopup:IsVisible() then
-      LeafVE.UI.workOrderPopup:Hide()
-    end
-    if LeafVE.UI.professionPopup and LeafVE.UI.professionPopup:IsVisible() then
-      LeafVE.UI.professionPopup:Hide()
-    end
-    if LeafVE.UI.talentPopup and LeafVE.UI.talentPopup:IsVisible() then
-      LeafVE.UI.talentPopup:Hide()
-    end
-    LeafVE.UI:HideNativeTalentFrame()
-    if LeafVE.UI.OpenGuildBankPanel then
-      LeafVE.UI:OpenGuildBankPanel()
-    end
-  end)
-  self.cardGuildBankBtn = guildBankBtn
-
   local workOrderBtn = CreateFrame("Button", nil, c, "UIPanelButtonTemplate")
   workOrderBtn:SetWidth(cardButtonWidth)
   workOrderBtn:SetHeight(cardButtonHeight)
   workOrderBtn:SetPoint("TOPLEFT", talentBtn, "BOTTOMLEFT", 0, -cardButtonGapY)
-  guildBankBtn:ClearAllPoints()
-  guildBankBtn:SetPoint("TOPLEFT", professionBtn, "TOPRIGHT", 12, 0)
-  guildBankBtn:SetPoint("RIGHT", workOrderBtn, "LEFT", -12, 0)
+  workOrderBtn:SetPoint("LEFT", professionBtn, "RIGHT", 16, 0)
   workOrderBtn:SetText("Work Orders")
   if workOrderBtn.GetFontString and workOrderBtn:GetFontString() and workOrderBtn:GetFontString().SetFont then
     workOrderBtn:GetFontString():SetFont(STANDARD_TEXT_FONT, cardButtonFontSize, "")
@@ -11473,38 +11857,33 @@ end)
   attribution:SetPoint("BOTTOM", quoteBox, "BOTTOM", 0, 15)
   attribution:SetText("|cFF2DD35C- Kakashi Hatake|r")
 
-  -- Leaf Village Emblem with BIG BRIGHT GLOW
-local leafGlow = c:CreateTexture(nil, "BACKGROUND")
-leafGlow:SetWidth(128)
-leafGlow:SetHeight(128)
-leafGlow:SetPoint("CENTER", c, "CENTER", 0, -380)  -- Centered between left and right sections
+  -- Leaf Village emblem and center badge anchor.
+  local leafGlow = c:CreateTexture(nil, "BACKGROUND")
+  leafGlow:SetWidth(128)
+  leafGlow:SetHeight(128)
+  leafGlow:SetPoint("CENTER", c, "CENTER", 0, -380)
   leafGlow:SetTexture("Interface\\GLUES\\Models\\UI_Draenei\\GenericGlow64")
-  leafGlow:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1.0)  -- ← FULL BRIGHTNESS (was 0.6)
+  leafGlow:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1.0)
   leafGlow:SetBlendMode("ADD")
-  
-local leafEmblem = c:CreateTexture(nil, "ARTWORK")
-leafEmblem:SetWidth(48)
-leafEmblem:SetHeight(48)
-leafEmblem:SetPoint("CENTER", c, "CENTER", 0, -125)  -- Same position
-leafEmblem:SetTexture(LEAF_EMBLEM)
-leafEmblem:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 1.0)
 
-  local leafLabel = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  leafLabel:SetPoint("TOP", leafEmblem, "BOTTOM", 0, -2)
-  leafLabel:SetText("Leaf Village")
-  leafLabel:SetTextColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3])
-  
+  local leafEmblem = c:CreateTexture(nil, "ARTWORK")
+  leafEmblem:SetWidth(48)
+  leafEmblem:SetHeight(48)
+  leafEmblem:SetPoint("CENTER", c, "CENTER", 0, -125)
+  leafEmblem:SetTexture(LEAF_EMBLEM)
   leafEmblem:SetVertexColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3], 0.8)
+  self.cardLeafEmblem = leafEmblem
 
   local leafLabel = c:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
   leafLabel:SetPoint("TOP", leafEmblem, "BOTTOM", 0, -2)
   leafLabel:SetText("Leaf Village")
   leafLabel:SetTextColor(THEME.leaf[1], THEME.leaf[2], THEME.leaf[3])
+  self.cardLeafLabel = leafLabel
 
   self.cardWorkOrderRepBadge = CreateFrame("Button", nil, c)
   self.cardWorkOrderRepBadge:SetWidth(cardButtonMiddleWidth + 18)
   self.cardWorkOrderRepBadge:SetHeight(22)
-  self.cardWorkOrderRepBadge:SetPoint("TOP", self.cardGuildBankBtn or guildBankBtn, "BOTTOM", 0, -15)
+  self.cardWorkOrderRepBadge:SetPoint("TOP", leafLabel, "BOTTOM", 0, -14)
   self.cardWorkOrderRepBadge:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
     edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -12100,11 +12479,9 @@ function LeafVE.UI:ShowPlayerCard(playerName)
   local isSelf = me and Lower(me) == Lower(playerName)
   if not isSelf then
     self:HideNativeTalentFrame()
-    LeafVE:RequestTalentData(playerName)
+    -- Keep the card lightweight in crowded areas; detailed gear/talent pulls
+    -- happen when the dedicated popups are opened.
     LeafVE:RequestProfessionDesignation(playerName)
-  end
-  if not isSelf then
-    LeafVE:RequestGearData(playerName)
   else
     LeafVE:CaptureAndCacheMyGear()
     LeafVE:CaptureAndCacheMyTalents(false)
@@ -22487,7 +22864,7 @@ function LeafVE.UI:OpenGuildBankPanel()
   if self.guildBankPopup and self.guildBankPopup:IsVisible() then
     self.guildBankPopup:Hide()
   end
-  self.activeTab = "guildBank"
+  self.activeTab = "workOrderRep"
   self:Refresh()
 end
 
@@ -24620,14 +24997,17 @@ function BuildMyPanel(panel)
   alltimeStats:SetText("")
   panel.alltimeStats = alltimeStats
   
-  -- Section Divider (now anchored to alltimeStats)
-  local divider = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  divider:SetPoint("TOPLEFT", alltimeStats, "BOTTOMLEFT", 0, -20)
-  divider:SetText("|cFFFFD700▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬|r")
+  -- Section divider: use a texture line so it stays stable across encodings.
+  local divider = panel:CreateTexture(nil, "ARTWORK")
+  divider:SetPoint("TOPLEFT", alltimeStats, "BOTTOMLEFT", 0, -16)
+  divider:SetWidth(460)
+  divider:SetHeight(2)
+  divider:SetTexture("Interface\\Tooltips\\UI-Tooltip-Background")
+  divider:SetVertexColor(THEME.gold[1], THEME.gold[2], THEME.gold[3], 0.7)
   
   -- Last Week's Top Shinobis (styled like other stats)
   local lastWeekLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  lastWeekLabel:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 0, -15)
+  lastWeekLabel:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 0, -13)
   lastWeekLabel:SetText("|cFF2DD35CLast Week's Top Shinobis|r")
   
   local lastWeekWinner = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -24663,7 +25043,7 @@ function BuildMyPanel(panel)
   
   -- Week Countdown (styled like other stats) - MOVE TO RIGHT SIDE
   local weekCountdownLabel = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-  weekCountdownLabel:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 250, -15)  -- ← 250 pixels to the right
+  weekCountdownLabel:SetPoint("TOPLEFT", divider, "BOTTOMLEFT", 250, -13)
   weekCountdownLabel:SetText("|cFF2DD35CWeek Resets In|r")
   
   local weekCountdown = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -28352,12 +28732,8 @@ function LeafVE.UI:Build()
   self.tabShoutouts:SetPoint("LEFT", self.tabAchievements, "RIGHT", 4, 0)
   self.tabShoutouts:SetWidth(80)
 
-  self.tabRaidSignups = TabButton(f, "Raid Sign-Ups", "LeafVE_TabRaidSignups")
-  self.tabRaidSignups:SetPoint("LEFT", self.tabShoutouts, "RIGHT", 4, 0)
-  self.tabRaidSignups:SetWidth(92)
-
   self.tabGuildEvents = TabButton(f, "Guild Events", "LeafVE_TabGuildEvents")
-  self.tabGuildEvents:SetPoint("LEFT", self.tabRaidSignups, "RIGHT", 4, 0)
+  self.tabGuildEvents:SetPoint("LEFT", self.tabShoutouts, "RIGHT", 4, 0)
   self.tabGuildEvents:SetWidth(88)
 
   self.tabHistory = TabButton(f, "History", "LeafVE_TabHistory")
@@ -28380,12 +28756,8 @@ function LeafVE.UI:Build()
   self.tabAdmin:SetPoint("TOPLEFT", self.tabWelcome, "BOTTOMLEFT", 0, -6)
   self.tabAdmin:SetWidth(50)
 
-  self.tabGuildBank = TabButton(f, "Guild Bank", "LeafVE_TabGuildBank")
-  self.tabGuildBank:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
-  self.tabGuildBank:SetWidth(78)
-
   self.tabWorkOrderRep = TabButton(f, "Work Order Reputation", "LeafVE_TabWorkOrderRep")
-  self.tabWorkOrderRep:SetPoint("LEFT", self.tabGuildBank, "RIGHT", 4, 0)
+  self.tabWorkOrderRep:SetPoint("LEFT", self.tabAdmin, "RIGHT", 4, 0)
   self.tabWorkOrderRep:SetWidth(142)
 
   self:BuildGroupedNavigation(f)
@@ -28457,17 +28829,6 @@ function LeafVE.UI:Build()
   self.panels.liveHistory:SetAllPoints(self.left)
   BuildLiveHistoryPanel(self.panels.liveHistory)
 
-  self.panels.raidSignups = CreateFrame("Frame", nil, self.inset)
-  self.panels.raidSignups:SetAllPoints(self.inset)
-  if BuildRaidSignupPanel then
-    BuildRaidSignupPanel(self.panels.raidSignups)
-  else
-    local raidLoadErrorText = self.panels.raidSignups:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    raidLoadErrorText:SetPoint("CENTER", self.panels.raidSignups, "CENTER", 0, 0)
-    raidLoadErrorText:SetText("|cFFFF6666Raid Sign-Ups failed to load.|r")
-    self.panels.raidSignups.loadErrorText = raidLoadErrorText
-  end
-
   self.panels.guildEvents = CreateFrame("Frame", nil, self.inset)
   self.panels.guildEvents:SetAllPoints(self.inset)
   if BuildGuildEventsPanel then
@@ -28478,9 +28839,6 @@ function LeafVE.UI:Build()
     guildEventLoadErrorText:SetText("|cFFFF6666Guild Events failed to load.|r")
     self.panels.guildEvents.loadErrorText = guildEventLoadErrorText
   end
-
-  self.panels.guildBank = CreateFrame("Frame", nil, self.inset)
-  self.panels.guildBank:SetAllPoints(self.inset)
 
   self.panels.workOrderRep = CreateFrame("Frame", nil, self.inset)
   self.panels.workOrderRep:SetAllPoints(self.inset)
@@ -28552,18 +28910,8 @@ function LeafVE.UI:Build()
     self:Refresh()
   end)
 
-  self.tabRaidSignups:SetScript("OnClick", function()
-    self.activeTab = "raidSignups"
-    self:Refresh()
-  end)
-
   self.tabGuildEvents:SetScript("OnClick", function()
     self.activeTab = "guildEvents"
-    self:Refresh()
-  end)
-
-  self.tabGuildBank:SetScript("OnClick", function()
-    self.activeTab = "guildBank"
     self:Refresh()
   end)
 
@@ -28595,9 +28943,7 @@ function LeafVE.UI:Build()
   self.panels.options:Hide()
   self.panels.admin:Hide()
   self.panels.liveHistory:Hide()
-  self.panels.raidSignups:Hide()
   self.panels.guildEvents:Hide()
-  self.panels.guildBank:Hide()
   self.panels.workOrderRep:Hide()
   self.panels.welcome:Hide()
   self.panels.join:Hide()
@@ -28641,8 +28987,13 @@ function LeafVE.UI:Refresh()
   elseif hasAccess and self.activeTab == "join" then
     self.activeTab = "me"
   end
+  if self.activeTab == "raidSignups" then
+    self.activeTab = "guildEvents"
+  elseif self.activeTab == "guildBank" then
+    self.activeTab = "workOrderRep"
+  end
 
-  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabShoutouts, self.tabHistory, self.tabLiveHistory, self.tabRaidSignups, self.tabGuildEvents, self.tabGuildBank, self.tabWorkOrderRep, self.tabOptions}
+  local accessTabs = {self.tabWelcome, self.tabMe, self.tabRoster, self.tabLeaderWeek, self.tabLeaderLife, self.tabAchievements, self.tabBadges, self.tabShoutouts, self.tabHistory, self.tabLiveHistory, self.tabGuildEvents, self.tabWorkOrderRep, self.tabOptions}
   if hasAccess then
     for _, tab in ipairs(accessTabs) do
       if tab then tab:Show() end
@@ -28675,7 +29026,7 @@ function LeafVE.UI:Refresh()
   self:RefreshGroupedNavigation(hasAccess)
 
   if self.card then
-    if hasAccess and self.activeTab ~= "raidSignups" and self.activeTab ~= "guildEvents" and self.activeTab ~= "guildBank" and self.activeTab ~= "workOrderRep" then
+    if hasAccess and self.activeTab ~= "guildEvents" and self.activeTab ~= "workOrderRep" then
       self.card:Show()
     else
       self.card:Hide()
@@ -28683,7 +29034,7 @@ function LeafVE.UI:Refresh()
   end
   
   -- Hide all panels safely
-  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "liveHistory", "raidSignups", "guildEvents", "guildBank", "workOrderRep", "welcome", "join"}
+  local panelNames = {"me", "shoutouts", "leaderWeek", "leaderLife", "roster", "history", "badges", "achievements", "options", "admin", "liveHistory", "guildEvents", "workOrderRep", "welcome", "join"}
   for _, name in ipairs(panelNames) do
     if self.panels[name] and self.panels[name].Hide then
       self.panels[name]:Hide()
@@ -29000,25 +29351,10 @@ function LeafVE.UI:Refresh()
     self.panels.liveHistory:Show()
     self:RefreshLiveHistory()
 
-  elseif self.activeTab == "raidSignups" and self.panels.raidSignups then
-    self.panels.raidSignups:Show()
-    if self.RefreshRaidSignupPanel then
-      self:RefreshRaidSignupPanel()
-    end
-
   elseif self.activeTab == "guildEvents" and self.panels.guildEvents then
     self.panels.guildEvents:Show()
     if self.RefreshGuildEventsPanel then
       self:RefreshGuildEventsPanel()
-    end
-
-  elseif self.activeTab == "guildBank" and self.panels.guildBank then
-    if not self.panels.guildBank.built and self.BuildGuildBankPanel then
-      self:BuildGuildBankPanel(self.panels.guildBank)
-    end
-    self.panels.guildBank:Show()
-    if self.RefreshGuildBankPanel then
-      self:RefreshGuildBankPanel()
     end
 
   elseif self.activeTab == "workOrderRep" and self.panels.workOrderRep then
@@ -29369,6 +29705,15 @@ LeafVE_eventFrame:SetScript("OnEvent", function()
         LeafVE:BroadcastLeaderboardData()
       end
     end)
+    LeafVE:ScheduleDeferred("player_login_alliance_chat_hook_1", 4, function()
+      LeafVE:InstallAllianceChatSupport()
+    end)
+    LeafVE:ScheduleDeferred("player_login_alliance_join", 6, function()
+      LeafVE:MaybeAutoJoinAlliance(true)
+    end)
+    LeafVE:ScheduleDeferred("player_login_alliance_chat_hook_2", 8, function()
+      LeafVE:InstallAllianceChatSupport()
+    end)
     LeafVE:ScheduleDeferred("player_login_version_popup", 11, function()
       LeafVE:MaybeShowOutdatedVersionPopup(false)
     end)
@@ -29380,24 +29725,16 @@ LeafVE_eventFrame:SetScript("OnEvent", function()
         if bme and LeafVE_GlobalDB.playerNotes and LeafVE_GlobalDB.playerNotes[bme] then
           LeafVE:BroadcastPlayerNote(LeafVE_GlobalDB.playerNotes[bme])
         end
-        LeafVE:RequestGuildBankOwner(true)
       end
     end)
     LeafVE:ScheduleDeferred("player_login_sync_phase_3", 10, function()
-      if InGuild() then
-        LeafVE.lastGearBroadcast = 0
-        LeafVE:BroadcastMyGear()
-      end
+      -- Disabled to avoid city-wide gear snapshot bursts on login.
     end)
     LeafVE:ScheduleDeferred("player_login_sync_phase_4", 13, function()
-      if InGuild() then
-        LeafVE.lastTalentBroadcast = 0
-        LeafVE:BroadcastMyTalents(true)
-      end
+      -- Disabled to avoid city-wide talent/spec bursts on login.
     end)
     LeafVE:ScheduleDeferred("player_login_sync_phase_5", 16, function()
       if InGuild() then
-        LeafVE:RequestRaidSignupSync(true)
         LeafVE:RequestGuildEventSync(true)
       end
     end)
@@ -29497,18 +29834,10 @@ LeafVE_eventFrame:SetScript("OnEvent", function()
   end
 
   if event == "BAG_UPDATE" then
-    local me = ShortName(UnitName("player"))
-    if me and LeafVE:IsGuildBankOwner(me) then
-      LeafVE:ScheduleGuildBankSnapshotUpdate(LeafVE:IsGuildBankBankFrameVisible(), true)
-    end
     return
   end
 
   if event == "PLAYER_MONEY" then
-    local me = ShortName(UnitName("player"))
-    if me and LeafVE:IsGuildBankOwner(me) then
-      LeafVE:ScheduleGuildBankSnapshotUpdate(LeafVE:IsGuildBankBankFrameVisible(), true)
-    end
     return
   end
 
@@ -29588,7 +29917,7 @@ LeafVE_updateFrame:SetScript("OnUpdate", function()
     end
   end
 
-  if LeafVE_updateTimers.bankWatcher >= 0.25 then
+  if LeafVE.guildBankEnabled == true and LeafVE_updateTimers.bankWatcher >= 0.25 then
     LeafVE_updateTimers.bankWatcher = 0
     local me = ShortName(UnitName("player"))
     local bankVisible = me and LeafVE:IsGuildBankOwner(me) and LeafVE:IsGuildBankBankFrameVisible() or false
@@ -29604,6 +29933,7 @@ LeafVE_updateFrame:SetScript("OnUpdate", function()
       end
     end
   end
+
 end)
 
 -------------------------------------------------
@@ -33093,6 +33423,203 @@ function LeafVE.UI:RefreshGuildEventsPanel(skipRequest)
   LeafVE_RaidUISetButtonEnabled(panel.saveSignupBtn, not isClosed)
   for _, signupStatus in ipairs(LeafVE_RaidUIStatusOrder) do
     UpdateWorkOrderModeButtonVisual(panel.statusButtons[signupStatus], NormalizeRaidSignupStatus(panel.selectedSignupStatus) == signupStatus)
+  end
+end
+
+if LeafVE.raidSignupsEnabled ~= true then
+  function LeafVE:GetRaidEventsDB()
+    return {}
+  end
+
+  function LeafVE:GetRaidSignupsDB()
+    return {}
+  end
+
+  function LeafVE:BroadcastRaidEvent()
+    return nil
+  end
+
+  function LeafVE:BroadcastRaidSignup()
+    return nil
+  end
+
+  function LeafVE:BroadcastRaidEventSnapshot()
+    return nil
+  end
+
+  function LeafVE:BroadcastRaidSignupSnapshot()
+    return nil
+  end
+
+  function LeafVE:RequestRaidSignupSync()
+    return nil
+  end
+
+  function LeafVE:HandleIncomingRaidEventMessage()
+    return nil
+  end
+
+  function LeafVE:HandleIncomingRaidSignupMessage()
+    return nil
+  end
+
+  function LeafVE:CreateRaidEvent()
+    return nil, "Raid Sign-Ups have been removed."
+  end
+
+  function LeafVE:SetRaidEventStatus()
+    return nil, "Raid Sign-Ups have been removed."
+  end
+
+  function LeafVE:SubmitRaidSignup()
+    return nil, "Raid Sign-Ups have been removed."
+  end
+
+  function BuildRaidSignupPanel(panel)
+    if not panel then return end
+    panel:Hide()
+  end
+
+  function LeafVE.UI:RefreshRaidSignupPanel()
+    if self and self.activeTab == "raidSignups" then
+      self.activeTab = "guildEvents"
+    end
+    return nil
+  end
+end
+
+if LeafVE.guildBankEnabled ~= true then
+  function LeafVE:GetGuildBankConfig()
+    return { owner = "", updatedAt = 0, updatedBy = "" }
+  end
+
+  function LeafVE:GetGuildBankOwnerName()
+    return ""
+  end
+
+  function LeafVE:IsGuildBankOwner()
+    return false
+  end
+
+  function LeafVE:GetGuildBankSnapshot()
+    return { owner = "", updatedAt = 0, counts = {}, goldCopper = 0, bagCounts = {}, bankCounts = {}, bagIcons = {}, bankIcons = {}, icons = {}, itemOrder = {} }
+  end
+
+  function LeafVE:BroadcastGuildBankOwner()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankOwner()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankLightweightSync()
+    return nil
+  end
+
+  function LeafVE:SetGuildBankOwner()
+    return nil, "Guild Bank has been removed."
+  end
+
+  function LeafVE:BroadcastGuildBankSnapshot()
+    return nil
+  end
+
+  function LeafVE:ScheduleIncomingGuildBankSnapshotMerge()
+    return nil
+  end
+
+  function LeafVE:ScheduleGuildBankSnapshotUpdate()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankSnapshot()
+    return nil
+  end
+
+  function LeafVE:BroadcastCachedGuildBankSnapshot()
+    return nil
+  end
+
+  function LeafVE:BroadcastGuildBankCategoryOverride()
+    return nil
+  end
+
+  function LeafVE:BroadcastGuildBankCategoryOverrideSnapshot()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankCategoryOverrideSync()
+    return nil
+  end
+
+  function LeafVE:BroadcastGuildBankHighValueItem()
+    return nil
+  end
+
+  function LeafVE:BroadcastGuildBankHighValueSnapshot()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankHighValueSync()
+    return nil
+  end
+
+  function LeafVE:CanPlayerRequestGuildBankItem()
+    return false
+  end
+
+  function LeafVE:BroadcastGuildBankRequest()
+    return nil
+  end
+
+  function LeafVE:BroadcastGuildBankRequestSnapshot()
+    return nil
+  end
+
+  function LeafVE:RequestGuildBankItemRequestSync()
+    return nil
+  end
+
+  function LeafVE:ApplyGuildBankOwnerBankMode()
+    return nil
+  end
+
+  function LeafVE.UI:CreateGuildBankPopup()
+    return nil
+  end
+
+  function LeafVE.UI:RefreshGuildBankPopup()
+    return nil
+  end
+
+  function LeafVE.UI:OpenGuildBankPanel()
+    if self and self.activeTab == "guildBank" then
+      self.activeTab = "workOrderRep"
+      self:Refresh()
+    end
+    return nil
+  end
+
+  function LeafVE.UI:RefreshVisibleGuildBankUIImmediate()
+    return nil
+  end
+
+  function LeafVE.UI:RefreshVisibleGuildBankUI()
+    return nil
+  end
+
+  function LeafVE.UI:BuildGuildBankPanel(panel)
+    if not panel then return end
+    panel:Hide()
+  end
+
+  function LeafVE.UI:RefreshGuildBankPanel()
+    return nil
+  end
+
+  function LeafVE.UI:RefreshGuildBankPanelRequests()
+    return nil
   end
 end
 
