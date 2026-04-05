@@ -61,8 +61,8 @@ local GUILD_BANK_REFRESH_DEBOUNCE = 0.2 -- coalesce bag/money bursts into one sn
 LeafVE.allianceChat = {
   name = "Leaf",
   password = "Leafbiz",
-  label = "Alliance",
-  color = { 1.00, 0.82, 0.05 },
+  label = "Leaf Alliance",
+  color = { 0.45, 0.80, 1.00 },
   prefixColor = "|cFF73C8FF",
   messageColor = "|cFFFFD10D",
   hiddenPrefix = "~LVA1~",
@@ -1694,9 +1694,15 @@ function LeafVE:BuildAllianceOutgoingPrefix()
   return LeafVE.allianceChat.prefixColor .. "[" .. self:GetAllianceDisplayLabel() .. "]|r " .. LeafVE.allianceChat.messageColor
 end
 
+function LeafVE:BuildAlliancePlainOutgoingPrefix()
+  return "[" .. self:GetAllianceDisplayLabel() .. "] "
+end
+
 function LeafVE:StripAllianceChatDecorators(message)
   local text = tostring(message or "")
   local prefix = self:BuildAllianceOutgoingPrefix()
+  local plainPrefix = self:BuildAlliancePlainOutgoingPrefix()
+  local legacyPlainPrefix = "[Alliance] "
 
   if string.sub(text, 1, string.len(prefix)) == prefix then
     text = string.sub(text, string.len(prefix) + 1)
@@ -1705,7 +1711,16 @@ function LeafVE:StripAllianceChatDecorators(message)
     end
   end
 
+  if string.sub(text, 1, string.len(plainPrefix)) == plainPrefix then
+    text = string.sub(text, string.len(plainPrefix) + 1)
+  end
+
+  if string.sub(text, 1, string.len(legacyPlainPrefix)) == legacyPlainPrefix then
+    text = string.sub(text, string.len(legacyPlainPrefix) + 1)
+  end
+
   text = string.gsub(text, "^%[" .. EscapePattern(self:GetAllianceDisplayLabel()) .. "%]%s*", "")
+  text = string.gsub(text, "^%[Alliance%]%s*", "")
   return text
 end
 
@@ -1717,7 +1732,7 @@ function LeafVE:BuildAllianceFormattedLine(author, message)
     displayAuthor = "Unknown"
   end
 
-  return displayAuthor .. " " .. self:BuildAllianceOutgoingPrefix() .. displayMessage .. "|r"
+  return LeafVE.allianceChat.prefixColor .. "[" .. self:GetAllianceDisplayLabel() .. "]|r [" .. displayAuthor .. "]: " .. LeafVE.allianceChat.messageColor .. displayMessage .. "|r"
 end
 
 function LeafVE:ShouldSuppressAllianceSystemMessage(message)
@@ -1746,6 +1761,49 @@ function LeafVE:ShouldSuppressAllianceRenderedText(text)
   return self:ShouldSuppressAllianceSystemMessage(rendered)
 end
 
+function LeafVE:StripAllianceRenderedMarkup(text)
+  local cleaned = tostring(text or "")
+  cleaned = string.gsub(cleaned, "|c%x%x%x%x%x%x%x%x", "")
+  cleaned = string.gsub(cleaned, "|r", "")
+  cleaned = string.gsub(cleaned, "|H.-|h", "")
+  cleaned = string.gsub(cleaned, "|h", "")
+  return cleaned
+end
+
+function LeafVE:TryFormatAllianceRenderedText(text)
+  local rendered = tostring(text or "")
+  if rendered == "" then
+    return nil
+  end
+  if string.find(rendered, LeafVE.allianceChat.prefixColor, 1, true) ~= nil
+    and string.find(rendered, "[" .. self:GetAllianceDisplayLabel() .. "]", 1, true) ~= nil then
+    return nil
+  end
+
+  local renderedPlain = self:StripAllianceRenderedMarkup(rendered)
+  local channelTag, author = string.match(renderedPlain, "^%[([^%]]+)%]%s*%[([^%]]+)%]:")
+  if not channelTag then
+    channelTag, author = string.match(renderedPlain, "^%[([^%]]+)%]%s*([^:]+):")
+  end
+  if not channelTag or not author then
+    return nil
+  end
+  if string.find(Lower(channelTag), Lower(self:GetAllianceChannelName()), 1, true) == nil then
+    return nil
+  end
+
+  local separatorStart, separatorEnd = string.find(rendered, ": ", 1, true)
+  local message = ""
+  if separatorEnd then
+    message = string.sub(rendered, separatorEnd + 1)
+  end
+
+  author = Trim(string.gsub(author, "^%[", ""))
+  author = Trim(string.gsub(author, "%]$", ""))
+
+  return self:BuildAllianceFormattedLine(author, message)
+end
+
 function LeafVE:WrapAllianceChatFrame(frame)
   if not frame or type(frame.AddMessage) ~= "function" or frame.leafVEAllianceWrapped then
     return false
@@ -1755,6 +1813,12 @@ function LeafVE:WrapAllianceChatFrame(frame)
   frame.AddMessage = function(selfFrame, text, r, g, b, chatTypeID, holdTime, accessID, lineID)
     if LeafVE and LeafVE.ShouldSuppressAllianceRenderedText and LeafVE:ShouldSuppressAllianceRenderedText(text) then
       return
+    end
+    if LeafVE and LeafVE.TryFormatAllianceRenderedText then
+      local formatted = LeafVE:TryFormatAllianceRenderedText(text)
+      if formatted then
+        return selfFrame.leafVEAllianceOriginalAddMessage(selfFrame, formatted, r, g, b, chatTypeID, holdTime, accessID, lineID)
+      end
     end
     return selfFrame.leafVEAllianceOriginalAddMessage(selfFrame, text, r, g, b, chatTypeID, holdTime, accessID, lineID)
   end
@@ -1903,7 +1967,7 @@ function LeafVE:InstallAllianceSendHook()
     local outgoing = msg
     if LeafVE and chatType == "CHANNEL" and type(msg) == "string" and msg ~= "" and string.sub(msg, 1, 1) ~= "/" then
       if LeafVE:IsAllianceOutgoingChannel(channel) then
-        outgoing = LeafVE:BuildAllianceOutgoingPrefix() .. LeafVE:StripAllianceChatDecorators(msg) .. "|r"
+        outgoing = LeafVE:BuildAlliancePlainOutgoingPrefix() .. LeafVE:StripAllianceChatDecorators(msg)
       end
     end
     return LeafVE.originalAllianceSendChatMessage(outgoing, chatType, language, channel)
@@ -1914,7 +1978,7 @@ end
 
 function LeafVE:InstallAllianceChatSupport()
   self:InstallAllianceRenderedMessageSuppression()
-  self:InstallAllianceSendHook()
+  self:InstallAllianceChatHandler()
 end
 
 function LeafVE:ApplyAllianceChannelColor(channelId)

@@ -4,8 +4,8 @@ _G.LeafAlliance = LeafAlliance
 LeafAlliance.version = "1.0.1"
 LeafAlliance.channelName = "Leaf"
 LeafAlliance.channelPassword = "Leafbiz"
-LeafAlliance.displayLabel = "Alliance"
-LeafAlliance.channelColor = { 1.00, 0.82, 0.05 }
+LeafAlliance.displayLabel = "Leaf Alliance"
+LeafAlliance.channelColor = { 0.45, 0.80, 1.00 }
 LeafAlliance.hiddenPrefix = "~LVA1~"
 LeafAlliance.protocolFieldSep = "^"
 LeafAlliance.guildRosterCacheDuration = 20
@@ -265,12 +265,36 @@ function LeafAlliance:BuildOutgoingPrefix()
   return "|cFF73C8FF[" .. self:GetDisplayLabel() .. "]|r |cFFFFD10D"
 end
 
+function LeafAlliance:BuildPlainOutgoingPrefix()
+  return "[" .. self:GetDisplayLabel() .. "] "
+end
+
 function LeafAlliance:BuildFormattedLine(author, message)
   local displayAuthor = ShortName(author) or Trim(author or "")
+  local displayMessage = tostring(message or "")
+  local colorPrefix = self:BuildOutgoingPrefix()
+  local plainPrefix = self:BuildPlainOutgoingPrefix()
+  local legacyPlainPrefix = "[Alliance] "
   if displayAuthor == nil or displayAuthor == "" then
     displayAuthor = "Unknown"
   end
-  return displayAuthor .. " |cFF73C8FF[" .. self:GetDisplayLabel() .. "]|r |cFFFFD10D" .. tostring(message or "") .. "|r"
+
+  if string.sub(displayMessage, 1, string.len(colorPrefix)) == colorPrefix then
+    displayMessage = string.sub(displayMessage, string.len(colorPrefix) + 1)
+    if string.sub(displayMessage, -2) == "|r" then
+      displayMessage = string.sub(displayMessage, 1, -3)
+    end
+  end
+  if string.sub(displayMessage, 1, string.len(plainPrefix)) == plainPrefix then
+    displayMessage = string.sub(displayMessage, string.len(plainPrefix) + 1)
+  end
+  if string.sub(displayMessage, 1, string.len(legacyPlainPrefix)) == legacyPlainPrefix then
+    displayMessage = string.sub(displayMessage, string.len(legacyPlainPrefix) + 1)
+  end
+  displayMessage = string.gsub(displayMessage, "^%[" .. self:GetDisplayLabel() .. "%]%s*", "")
+  displayMessage = string.gsub(displayMessage, "^%[Alliance%]%s*", "")
+
+  return "|cFF73C8FF[" .. self:GetDisplayLabel() .. "]|r " .. displayAuthor .. ": |cFFFFD10D" .. displayMessage .. "|r"
 end
 
 function LeafAlliance:IsHiddenProtocolMessage(message)
@@ -462,10 +486,20 @@ function LeafAlliance:InstallSendHook()
     local outgoing = msg
     if LeafAlliance and chatType == "CHANNEL" and type(msg) == "string" and msg ~= "" and string.sub(msg, 1, 1) ~= "/" then
       if LeafAlliance:IsAllianceOutgoingChannel(channel) and not LeafAlliance:IsHiddenProtocolMessage(msg) then
-        local labelText = "[" .. LeafAlliance:GetDisplayLabel() .. "]"
-        if string.find(msg, labelText, 1, true) == nil then
-          outgoing = LeafAlliance:BuildOutgoingPrefix() .. msg .. "|r"
+        local cleanMessage = tostring(msg or "")
+        local colorPrefix = LeafAlliance:BuildOutgoingPrefix()
+        local plainPrefix = LeafAlliance:BuildPlainOutgoingPrefix()
+        if string.sub(cleanMessage, 1, string.len(colorPrefix)) == colorPrefix then
+          cleanMessage = string.sub(cleanMessage, string.len(colorPrefix) + 1)
+          if string.sub(cleanMessage, -2) == "|r" then
+            cleanMessage = string.sub(cleanMessage, 1, -3)
+          end
         end
+        if string.sub(cleanMessage, 1, string.len(plainPrefix)) == plainPrefix then
+          cleanMessage = string.sub(cleanMessage, string.len(plainPrefix) + 1)
+        end
+        cleanMessage = string.gsub(cleanMessage, "^%[" .. LeafAlliance:GetDisplayLabel() .. "%]%s*", "")
+        outgoing = plainPrefix .. cleanMessage
       end
     end
     return LeafAlliance.originalSendChatMessage(outgoing, chatType, language, channel)
@@ -475,7 +509,6 @@ end
 
 function LeafAlliance:InstallChatSupport()
   self:InstallChatHandler()
-  self:InstallSendHook()
 end
 
 function LeafAlliance:ApplyChannelColor(channelId)
