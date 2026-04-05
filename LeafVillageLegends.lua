@@ -65,6 +65,7 @@ LeafVE.allianceChat = {
   color = { 1.00, 0.82, 0.05 },
   prefixColor = "|cFF73C8FF",
   messageColor = "|cFFFFD10D",
+  hiddenPrefix = "~LVA1~",
 }
 
 local function PurgeDisabledFeatureData()
@@ -1736,6 +1737,47 @@ function LeafVE:ShouldSuppressAllianceSystemMessage(message)
     or string.find(text, "left channel", 1, true) ~= nil
 end
 
+function LeafVE:ShouldSuppressAllianceRenderedText(text)
+  local rendered = tostring(text or "")
+  local hiddenPrefix = LeafVE.allianceChat and LeafVE.allianceChat.hiddenPrefix or ""
+  if hiddenPrefix ~= "" and string.find(rendered, hiddenPrefix, 1, true) ~= nil then
+    return true
+  end
+  return self:ShouldSuppressAllianceSystemMessage(rendered)
+end
+
+function LeafVE:WrapAllianceChatFrame(frame)
+  if not frame or type(frame.AddMessage) ~= "function" or frame.leafVEAllianceWrapped then
+    return false
+  end
+
+  frame.leafVEAllianceOriginalAddMessage = frame.AddMessage
+  frame.AddMessage = function(selfFrame, text, r, g, b, chatTypeID, holdTime, accessID, lineID)
+    if LeafVE and LeafVE.ShouldSuppressAllianceRenderedText and LeafVE:ShouldSuppressAllianceRenderedText(text) then
+      return
+    end
+    return selfFrame.leafVEAllianceOriginalAddMessage(selfFrame, text, r, g, b, chatTypeID, holdTime, accessID, lineID)
+  end
+
+  frame.leafVEAllianceWrapped = true
+  return true
+end
+
+function LeafVE:InstallAllianceRenderedMessageSuppression()
+  if self.allianceRenderedSuppressionInstalled then
+    return
+  end
+
+  self.allianceRenderedSuppressionInstalled = true
+
+  local totalFrames = tonumber(NUM_CHAT_WINDOWS) or 7
+  for i = 1, totalFrames do
+    self:WrapAllianceChatFrame(_G["ChatFrame" .. tostring(i)])
+  end
+  self:WrapAllianceChatFrame(DEFAULT_CHAT_FRAME)
+  self:WrapAllianceChatFrame(SELECTED_CHAT_FRAME)
+end
+
 function LeafVE:HandleAllianceChatFrameMessage(chatFrame, eventName, message, author, languageName, channelString, target, flags, unknown1, channelNumber, channelName, unknown2, counter)
   if eventName == "CHAT_MSG_CHANNEL_NOTICE" or eventName == "CHAT_MSG_CHANNEL_NOTICE_USER" then
     if self:ShouldSuppressAllianceSystemMessage(message) then
@@ -1871,6 +1913,7 @@ function LeafVE:InstallAllianceSendHook()
 end
 
 function LeafVE:InstallAllianceChatSupport()
+  self:InstallAllianceRenderedMessageSuppression()
   self:InstallAllianceSendHook()
 end
 

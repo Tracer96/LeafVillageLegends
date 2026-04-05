@@ -549,10 +549,6 @@ function LeafAlliance:FinalizeJoin(channelId, alreadyJoined, openInput)
     self:OpenChatInput()
   end
 
-  self:Schedule("join_request_sync", 1.5, function()
-    LeafAlliance:RequestSync(true)
-    LeafAlliance:BroadcastRosterSnapshot(true)
-  end)
   self:RefreshUI()
 
   return true
@@ -751,18 +747,7 @@ function LeafAlliance:DeserializeRosterMembers(payload)
 end
 
 function LeafAlliance:SendHiddenMessage(body)
-  local channelId = self:GetChannelId()
-  if channelId <= 0 then
-    return false
-  end
-
-  local sender = self.originalSendChatMessage or SendChatMessage
-  if type(sender) ~= "function" then
-    return false
-  end
-
-  sender(self.hiddenPrefix .. body, "CHANNEL", nil, channelId)
-  return true
+  return false
 end
 
 function LeafAlliance:IngestSnapshot(snapshot, sender)
@@ -791,128 +776,21 @@ function LeafAlliance:IngestSnapshot(snapshot, sender)
 end
 
 function LeafAlliance:BroadcastRosterSnapshot(force)
-  local now = Now()
-  if not self:IsJoined() then
-    return false
-  end
-  if not force and (now - self.lastBroadcastAt) < self.syncBroadcastCooldown then
-    return false
-  end
-
-  local snapshot = self:BuildLocalGuildSnapshot(force)
-  if not snapshot then
-    return false
-  end
-
-  self:IngestSnapshot(snapshot, snapshot.sender)
-
-  local payload = self:SerializeRosterMembers(snapshot.members)
-  local totalChunks = math.ceil(string.len(payload) / self.syncChunkSize)
-  if totalChunks < 1 then
-    totalChunks = 1
-  end
-
-  local encodedGuild = EscapeField(snapshot.guild)
-  local sep = self.protocolFieldSep or "^"
-  for chunkIndex = 1, totalChunks do
-    local startPos = ((chunkIndex - 1) * self.syncChunkSize) + 1
-    local chunkPayload = string.sub(payload, startPos, startPos + self.syncChunkSize - 1)
-    local message = table.concat({
-      "RST",
-      encodedGuild,
-      tostring(snapshot.updatedAt),
-      tostring(chunkIndex),
-      tostring(totalChunks),
-      chunkPayload
-    }, sep)
-    self:SendHiddenMessage(message)
-  end
-
-  self.lastBroadcastAt = now
-  self.lastHeartbeatAt = now
-  return true
+  return false
 end
 
 function LeafAlliance:RequestSync(force)
-  local now = Now()
-  if not self:IsJoined() then
-    return false
-  end
-  if not force and (now - self.lastSyncRequestAt) < self.syncRequestCooldown then
-    return false
-  end
-  self.lastSyncRequestAt = now
-  return self:SendHiddenMessage("REQ" .. (self.protocolFieldSep or "^") .. tostring(math.floor(now)))
+  return false
 end
 
 function LeafAlliance:HandleSyncRequest(sender)
   if sender and SamePlayerName(sender, UnitName and UnitName("player") or "") then
     return
   end
-  if not self:IsJoined() then
-    return
-  end
-  self:Schedule("respond_to_sync_request", 1.0, function()
-    LeafAlliance:BroadcastRosterSnapshot(true)
-  end)
 end
 
 function LeafAlliance:HandleRosterChunk(messageBody, sender)
-  local fields = Split(messageBody, self.protocolFieldSep or "^")
-  local guildName = UnescapeField(fields[2] or "")
-  local updatedAt = tonumber(fields[3]) or math.floor(Now())
-  local chunkIndex = tonumber(fields[4]) or 0
-  local chunkTotal = tonumber(fields[5]) or 0
-  local chunkPayload = fields[6] or ""
-
-  if chunkIndex <= 0 or chunkTotal <= 0 or Trim(guildName) == "" then
-    return
-  end
-
-  local key = Lower(ShortName(sender) or "unknown") .. "|" .. Lower(guildName) .. "|" .. tostring(updatedAt)
-  local pending = self.pendingChunks[key]
-  if not pending then
-    pending = {
-      guild = guildName,
-      updatedAt = updatedAt,
-      sender = sender,
-      total = chunkTotal,
-      parts = {},
-      received = {},
-      expiresAt = Now() + 15
-    }
-    self.pendingChunks[key] = pending
-  end
-
-  pending.parts[chunkIndex] = chunkPayload
-  pending.received[chunkIndex] = true
-  pending.total = chunkTotal
-  pending.expiresAt = Now() + 15
-
-  local count = 0
-  for i = 1, pending.total do
-    if pending.received[i] then
-      count = count + 1
-    end
-  end
-
-  if count < pending.total then
-    return
-  end
-
-  local fullPayload = ""
-  for i = 1, pending.total do
-    fullPayload = fullPayload .. tostring(pending.parts[i] or "")
-  end
-  self.pendingChunks[key] = nil
-
-  local snapshot = {
-    guild = pending.guild,
-    updatedAt = pending.updatedAt,
-    sender = ShortName(sender),
-    members = self:DeserializeRosterMembers(fullPayload)
-  }
-  self:IngestSnapshot(snapshot, sender)
+  return
 end
 
 function LeafAlliance:HandleIncomingProtocolMessage(message, sender)
@@ -920,34 +798,15 @@ function LeafAlliance:HandleIncomingProtocolMessage(message, sender)
     return false
   end
 
-  local body = string.sub(message, string.len(self.hiddenPrefix) + 1)
-  local fields = Split(body, self.protocolFieldSep or "^")
-  local messageType = fields[1] or ""
-
-  if messageType == "REQ" then
-    self:HandleSyncRequest(sender)
-    return true
-  end
-
-  if messageType == "RST" then
-    self:HandleRosterChunk(body, sender)
-    return true
-  end
-
   return true
 end
 
 function LeafAlliance:QueueBroadcast(delay)
-  self:Schedule("queued_broadcast", delay or 1.5, function()
-    LeafAlliance:BroadcastRosterSnapshot(false)
-  end)
+  return
 end
 
 function LeafAlliance:RefreshLocalSnapshot(force)
-  local snapshot = self:BuildLocalGuildSnapshot(force)
-  if snapshot then
-    self:IngestSnapshot(snapshot, snapshot.sender)
-  end
+  return
 end
 
 function LeafAlliance:PruneStaleRemoteGuilds()
@@ -970,51 +829,7 @@ function LeafAlliance:PruneStaleRemoteGuilds()
 end
 
 function LeafAlliance:BuildDisplayRows()
-  local guilds = {}
-  local totalMembers = 0
-  local localGuildName = Lower(GetGuildInfo and GetGuildInfo("player") or "")
-
-  for _, snapshot in pairs(self.remoteGuilds) do
-    if type(snapshot) == "table" then
-      table.insert(guilds, snapshot)
-    end
-  end
-
-  table.sort(guilds, function(a, b)
-    local aIsLocal = Lower(a.guild or "") == localGuildName
-    local bIsLocal = Lower(b.guild or "") == localGuildName
-    if aIsLocal ~= bIsLocal then
-      return aIsLocal
-    end
-    return Lower(a.guild or "") < Lower(b.guild or "")
-  end)
-
-  local rows = {}
-  for i = 1, table.getn(guilds) do
-    local snapshot = guilds[i]
-    local memberCount = table.getn(snapshot.members or {})
-    totalMembers = totalMembers + memberCount
-
-    table.insert(rows, {
-      rowType = "guild",
-      guild = snapshot.guild,
-      count = memberCount
-    })
-
-    for j = 1, memberCount do
-      local member = snapshot.members[j]
-      table.insert(rows, {
-        rowType = "member",
-        guild = snapshot.guild,
-        name = member.name,
-        class = member.class,
-        level = member.level,
-        rank = member.rank
-      })
-    end
-  end
-
-  return rows, table.getn(guilds), totalMembers
+  return {}, 0, 0
 end
 
 function LeafAlliance:UpdateMinimapButtonPosition()
@@ -1183,7 +998,7 @@ function LeafAlliance:CreatePanel()
   subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
   subtitle:SetWidth(425)
   subtitle:SetJustifyH("LEFT")
-  subtitle:SetText("|cFFB8B8B8Joins the shared alliance channel and syncs online guild rosters from every guild running this addon.|r")
+  subtitle:SetText("|cFFB8B8B8Joins the shared alliance channel with auto-join, quiet notices, and alliance chat formatting.|r")
 
   local closeButton = CreateFrame("Button", nil, panel, "UIPanelCloseButton")
   closeButton:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -4, -4)
@@ -1217,14 +1032,8 @@ function LeafAlliance:CreatePanel()
   refreshButton:SetWidth(110)
   refreshButton:SetHeight(22)
   refreshButton:SetPoint("LEFT", joinButton, "RIGHT", 8, 0)
-  refreshButton:SetText("Refresh")
+  refreshButton:SetText("Refresh UI")
   refreshButton:SetScript("OnClick", function()
-    LeafAlliance.guildRosterCacheTime = 0
-    LeafAlliance:RefreshLocalSnapshot(true)
-    if LeafAlliance:IsJoined() then
-      LeafAlliance:BroadcastRosterSnapshot(true)
-      LeafAlliance:RequestSync(true)
-    end
     LeafAlliance:RefreshPanel()
   end)
 
@@ -1250,13 +1059,13 @@ function LeafAlliance:CreatePanel()
 
   local listTitle = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
   listTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -154)
-  listTitle:SetText("|cFFFFD700Online Guild Roster|r")
+  listTitle:SetText("|cFFFFD700Alliance Channel|r")
 
   local noteText = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
   noteText:SetPoint("TOPLEFT", listTitle, "BOTTOMLEFT", 0, -4)
   noteText:SetWidth(425)
   noteText:SetJustifyH("LEFT")
-  noteText:SetText("|cFF888888Guilds stay visible while another addon user from that guild is online and sharing their roster.|r")
+  noteText:SetText("|cFF888888Roster syncing is disabled in this build. This addon only manages alliance chat.|r")
 
   local scrollFrame = CreateFrame("ScrollFrame", nil, panel)
   scrollFrame:SetPoint("TOPLEFT", panel, "TOPLEFT", 16, -198)
@@ -1345,7 +1154,7 @@ function LeafAlliance:RefreshPanel()
   panel.autoJoinCheck:SetChecked(LeafAllianceDB.options.autoJoin == true)
 
   local rows, guildCount, memberCount = self:BuildDisplayRows()
-  panel.summaryText:SetText("|cFFB8B8B8Synced guilds:|r " .. tostring(guildCount) .. "   |cFFB8B8B8Online members:|r " .. tostring(memberCount))
+  panel.summaryText:SetText("|cFFB8B8B8Roster sync:|r disabled   |cFFB8B8B8Channel:|r " .. tostring(self:GetChannelName()))
 
   for i = 1, table.getn(self.panelRows) do
     self.panelRows[i]:Hide()
@@ -1370,7 +1179,7 @@ function LeafAlliance:RefreshPanel()
       panel.emptyFrame = emptyFrame
     end
     emptyFrame:SetPoint("TOPLEFT", panel.scrollChild, "TOPLEFT", 0, yOffset)
-    emptyFrame.text:SetText("|cFF888888No guild rosters synced yet. Join the alliance channel and wait for guildies running Leaf Alliance.|r")
+    emptyFrame.text:SetText("|cFF888888Alliance roster syncing is disabled. Use this addon only for joining and chatting in the shared alliance channel.|r")
     emptyFrame:Show()
     yOffset = yOffset - 44
   else
@@ -1449,14 +1258,7 @@ end
 
 function LeafAlliance:PeriodicTick()
   self:PruneStaleRemoteGuilds()
-  self:RefreshLocalSnapshot(false)
-
-  if self:IsJoined() then
-    local now = Now()
-    if (now - self.lastHeartbeatAt) >= self.syncHeartbeatInterval then
-      self:BroadcastRosterSnapshot(true)
-    end
-  else
+  if not self:IsJoined() then
     self:MaybeAutoJoin(false)
   end
 
@@ -1478,12 +1280,6 @@ function LeafAlliance:HandleSlashCommand(message)
   end
 
   if message == "refresh" then
-    self.guildRosterCacheTime = 0
-    self:RefreshLocalSnapshot(true)
-    if self:IsJoined() then
-      self:BroadcastRosterSnapshot(true)
-      self:RequestSync(true)
-    end
     self:RefreshUI()
     return
   end
@@ -1512,12 +1308,10 @@ function LeafAlliance:OnEvent(event)
   if event == "PLAYER_LOGIN" then
     self:EnsureDB()
     self:InstallChatSupport()
-    self:RefreshLocalSnapshot(true)
     self:CreatePanel()
     self:CreateMinimapButton()
     self:Schedule("login_auto_join", 6, function()
       LeafAlliance:MaybeAutoJoin(true)
-      LeafAlliance:RefreshLocalSnapshot(true)
     end)
     self:Schedule("login_auto_join_retry", 14, function()
       LeafAlliance:MaybeAutoJoin(true)
@@ -1532,11 +1326,7 @@ function LeafAlliance:OnEvent(event)
   end
 
   if event == "GUILD_ROSTER_UPDATE" then
-    self.guildRosterCacheTime = 0
-    self:RefreshLocalSnapshot(true)
-    if self:IsJoined() then
-      self:QueueBroadcast(1.0)
-    end
+    self:RefreshUI()
     return
   end
 end
